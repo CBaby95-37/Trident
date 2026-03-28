@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trident | Professional Pipeline</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #050505; color: #e5e5e5; font-family: 'Segoe UI', system-ui, sans-serif; }
+        .glass { background: rgba(10, 10, 10, 0.8); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.03); }
+        .chat-box::-webkit-scrollbar { width: 5px; }
+        .chat-box::-webkit-scrollbar-thumb { background: #1a1a1a; border-radius: 10px; }
+        .console-font { font-family: 'Consolas', 'Courier New', monospace; }
+        @keyframes pulse-cyan { 0% { box-shadow: 0 0 0 0 rgba(6, 182, 212, 0.6); } 70% { box-shadow: 0 0 0 12px rgba(6, 182, 212, 0); } 100% { box-shadow: 0 0 0 0 rgba(6, 182, 212, 0); } }
+        .recording { animation: pulse-cyan 1.5s infinite; background-color: #0891b2 !important; border-color: #22d3ee !important; }
+        .trident-gradient { background: linear-gradient(135deg, #007ACC 0%, #00d4ff 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    </style>
+</head>
+<body class="h-screen overflow-hidden flex flex-col">
+
+    <!-- TRIDENT LOGIN OVERLAY -->
+    <div id="login-overlay" class="fixed inset-0 z-50 flex items-center justify-center bg-[#030303]">
+        <div class="w-full max-w-md p-10 glass rounded-3xl shadow-2xl border border-white/5 text-center">
+            <h1 class="text-5xl font-black trident-gradient tracking-tighter mb-2 italic">TRIDENT</h1>
+            <p class="text-[10px] text-gray-500 font-black tracking-[0.3em] mb-10 uppercase">Advanced Communication Array</p>
+            
+            <div class="space-y-5 text-left">
+                <div>
+                    <label class="block text-[9px] font-bold text-gray-600 mb-2 uppercase tracking-widest ml-1">Operator Identity</label>
+                    <input type="text" id="username" class="w-full bg-[#0a0a0a] border border-[#1a1a1a] rounded-xl p-4 focus:border-cyan-500/50 outline-none transition-all text-white placeholder-gray-800" placeholder="Define handle...">
+                </div>
+                <div>
+                    <label class="block text-[9px] font-bold text-gray-600 mb-2 uppercase tracking-widest ml-1">Frequency Override (Optional)</label>
+                    <input type="text" id="room-input" class="w-full bg-[#0a0a0a] border border-[#1a1a1a] rounded-xl p-4 focus:border-cyan-500/50 outline-none transition-all text-white placeholder-gray-800" placeholder="Enter custom group ID...">
+                </div>
+                <button id="btn-connect" class="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-black py-5 rounded-xl transition-all shadow-xl shadow-cyan-900/20 mt-4 tracking-widest text-xs uppercase">Initialize Pipeline</button>
+            </div>
+            <div class="mt-8 text-[9px] text-gray-700 font-bold uppercase tracking-widest">Secure Cloud Architecture v5.1</div>
+        </div>
+    </div>
+
+    <!-- TRIDENT PRIMARY INTERFACE -->
+    <div id="main-app" class="flex flex-1 h-full hidden">
+        
+        <!-- SIDEBAR: GROUP DISCOVERY -->
+        <aside class="w-80 glass flex flex-col border-r border-white/5">
+            <div class="p-8">
+                <div class="flex items-center space-x-2 mb-8">
+                    <div class="w-2 h-2 bg-cyan-500 rounded-full animate-pulse"></div>
+                    <h2 class="text-white text-[10px] font-black uppercase tracking-[0.2em]">Active Frequencies</h2>
+                </div>
+                <div id="group-list" class="space-y-3 overflow-y-auto max-h-[65vh] pr-2">
+                    <!-- Groups populate via Lobby Engine -->
+                </div>
+            </div>
+            <div class="mt-auto p-8 border-t border-white/5 bg-black/20">
+                <button id="btn-create-group" class="w-full bg-white/5 hover:bg-white/10 text-cyan-400 border border-white/5 font-black py-4 rounded-xl transition-all text-[10px] uppercase tracking-widest">Construct New Group</button>
+            </div>
+        </aside>
+
+        <!-- MAIN VIEW: ENCRYPTED PIPELINE -->
+        <main class="flex-1 flex flex-col relative bg-[#030303]">
+            <header class="p-6 border-b border-white/5 flex justify-between items-center glass">
+                <div class="flex items-center space-x-6">
+                    <div class="flex flex-col">
+                        <span class="text-[9px] font-black text-cyan-600 uppercase tracking-widest">Active Connection</span>
+                        <h3 id="current-room-name" class="text-xl font-light text-gray-200 uppercase tracking-tighter">STANDBY</h3>
+                    </div>
+                </div>
+                <div id="status-text" class="text-[9px] font-black text-gray-600 tracking-widest uppercase px-4 py-2 border border-white/5 rounded-full">Pipeline: Offline</div>
+            </header>
+
+            <!-- CHAT DATA STREAM -->
+            <div id="chat-box" class="flex-1 overflow-y-auto p-10 space-y-6 console-font chat-box text-sm">
+                <div class="text-gray-800 italic uppercase text-[10px] tracking-widest border-b border-white/5 pb-4">Awaiting data packets from TRIDENT cloud...</div>
+            </div>
+
+            <!-- TRANSMISSION ARRAY -->
+            <footer class="p-10 border-t border-white/5 glass">
+                <div class="max-w-5xl mx-auto flex items-end space-x-4">
+                    <div class="flex-1 flex flex-col space-y-2">
+                        <span class="text-[8px] font-black text-gray-600 uppercase tracking-[0.2em] ml-2">Message Input</span>
+                        <input type="text" id="chat-input" class="w-full bg-black border border-[#1a1a1a] rounded-2xl p-5 outline-none focus:border-cyan-500/30 transition-all text-white shadow-inner" placeholder="Broadcast to group...">
+                    </div>
+                    <button id="btn-mic" class="w-16 h-16 bg-[#0a0a0a] border border-[#1a1a1a] rounded-2xl flex items-center justify-center hover:bg-[#111] transition-all text-2xl shadow-lg border-white/5">🎤</button>
+                    <button id="btn-send" class="px-10 h-16 bg-cyan-600 hover:bg-cyan-500 rounded-2xl text-white font-black transition-all shadow-xl shadow-cyan-900/30 tracking-widest text-xs uppercase">Send</button>
+                </div>
+            </footer>
+        </main>
+    </div>
+
+    <script>
+        // TRIDENT CORE SYSTEM CONFIG
+        const LOBBY_TOPIC = "TRIDENT_CORE_DISCOVERY";
+        let state = {
+            username: "",
+            sessionId: Math.random().toString(36).substring(2, 10),
+            currentRoom: null,
+            isHosting: false,
+            processedIds: new Set(),
+            activeGroups: {},
+            mediaRecorder: null,
+            audioChunks: [],
+            sseInstance: null
+        };
+
+        const ui = {
+            overlay: document.getElementById('login-overlay'),
+            main: document.getElementById('main-app'),
+            userIn: document.getElementById('username'),
+            roomIn: document.getElementById('room-input'),
+            btnConnect: document.getElementById('btn-connect'),
+            groupList: document.getElementById('group-list'),
+            chatBox: document.getElementById('chat-box'),
+            chatInput: document.getElementById('chat-input'),
+            btnSend: document.getElementById('btn-send'),
+            btnMic: document.getElementById('btn-mic'),
+            roomTitle: document.getElementById('current-room-name'),
+            status: document.getElementById('status-text'),
+            btnCreate: document.getElementById('btn-create-group')
+        };
+
+        // NETWORK DATA BROADCASTER
+        async function broadcast(topic, text, blob = null) {
+            if (!topic) return;
+            const url = `https://ntfy.sh/${topic}`;
+            const packet = `${state.sessionId}<|>${state.username}<|>${text}`;
+            
+            try {
+                if (blob) {
+                    await fetch(url, { 
+                        method: 'POST', 
+                        body: blob, 
+                        headers: { 'X-Message': packet, 'X-Title': 'TRIDENT_VOICE' } 
+                    });
+                } else {
+                    await fetch(url, { method: 'POST', body: packet });
+                }
+            } catch (e) { console.error("Transmission Failure", e); }
+        }
+
+        // SSE STREAMING ENGINE
+        function establishPipeline(topic) {
+            if (state.sseInstance) state.sseInstance.close();
+            
+            ui.roomTitle.innerText = topic;
+            ui.chatBox.innerHTML = `<div class="text-cyan-900 text-[10px] tracking-[0.3em] font-bold uppercase mb-4">Pipeline established on frequency: ${topic}</div>`;
+            state.processedIds.clear();
+            
+            state.sseInstance = new EventSource(`https://ntfy.sh/${topic}/sse`);
+            state.sseInstance.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                if (state.processedIds.has(data.id)) return;
+                state.processedIds.add(data.id);
+
+                const parts = data.message.split('<|>');
+                if (parts.length === 3) {
+                    const [sid, user, msg] = parts;
+                    renderMessage(sid === state.sessionId ? "YOU" : user, msg, data.attachment);
+                }
+            };
+            
+            broadcast(topic, "SYSTEM: Initialized connection to the array.");
+            ui.status.innerText = "Pipeline: Active Stream";
+            ui.status.classList.add('text-cyan-400');
+        }
+
+        // GLOBAL DISCOVERY SYSTEM
+        function initDiscovery() {
+            const lobbySource = new EventSource(`https://ntfy.sh/${LOBBY_TOPIC}/sse`);
+            lobbySource.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                const parts = data.message.split('|');
+                if (parts[0] === "TRIDENT_HB") {
+                    state.activeGroups[parts[1]] = { room: parts[1], user: parts[2], time: Date.now() };
+                    renderSidebar();
+                }
+            };
+
+            setInterval(() => {
+                if (state.isHosting && state.currentRoom) {
+                    broadcast(LOBBY_TOPIC, `TRIDENT_HB|${state.currentRoom}|${state.username}`);
+                }
+                renderSidebar(); 
+            }, 8000);
+        }
+
+        // UI RENDERERS
+        function renderMessage(user, text, attachment) {
+            const div = document.createElement('div');
+            const isSelf = user === "YOU";
+            const userColor = isSelf ? "text-cyan-400" : "text-gray-500";
+            const borderStyle = isSelf ? "border-l-2 border-cyan-900 pl-4" : "border-l border-white/5 pl-4";
+            
+            div.className = `flex flex-col space-y-1 ${borderStyle}`;
+            div.innerHTML = `
+                <span class="${userColor} text-[10px] font-black uppercase tracking-widest">${user}</span>
+                <span class="text-gray-300 font-light tracking-tight">${text}</span>
+            `;
+            ui.chatBox.appendChild(div);
+            ui.chatBox.scrollTop = ui.chatBox.scrollHeight;
+
+            if (attachment && !isSelf) {
+                const audio = new Audio(attachment.url);
+                audio.play();
+            }
+        }
+
+        function renderSidebar() {
+            ui.groupList.innerHTML = '';
+            const now = Date.now();
+            Object.values(state.activeGroups).forEach(g => {
+                if (now - g.time > 25000) return;
+                const btn = document.createElement('button');
+                btn.className = "w-full text-left p-5 bg-white/5 hover:bg-white/10 rounded-2xl transition-all border border-white/5 hover:border-cyan-500/20 group";
+                btn.innerHTML = `
+                    <div class="text-white font-bold text-xs uppercase tracking-tighter group-hover:text-cyan-400 transition-colors">${g.user}'s Group</div>
+                    <div class="text-[9px] text-gray-600 font-bold uppercase tracking-widest mt-1">ID: ${g.room}</div>
+                `;
+                btn.onclick = () => { state.currentRoom = g.room; establishPipeline(g.room); };
+                ui.groupList.appendChild(btn);
+            });
+        }
+
+        // BUTTON HANDLERS
+        ui.btnConnect.onclick = () => {
+            if (!ui.userIn.value) return;
+            state.username = ui.userIn.value.toUpperCase();
+            ui.overlay.style.display = 'none';
+            ui.main.classList.remove('hidden');
+            initDiscovery();
+            if (ui.roomIn.value) {
+                state.currentRoom = ui.roomIn.value.toUpperCase();
+                establishPipeline(state.currentRoom);
+            }
+        };
+
+        ui.btnCreate.onclick = () => {
+            state.isHosting = true;
+            state.currentRoom = "TRIDENT_" + Math.random().toString(36).substring(2, 8).toUpperCase();
+            establishPipeline(state.currentRoom);
+            ui.btnCreate.innerText = "FREQUENCY ACTIVE";
+            ui.btnCreate.classList.add('opacity-50');
+            ui.btnCreate.disabled = true;
+        };
+
+        ui.btnSend.onclick = () => {
+            if (!ui.chatInput.value || !state.currentRoom) return;
+            broadcast(state.currentRoom, ui.chatInput.value);
+            ui.chatInput.value = '';
+        };
+
+        // VOICE TRANSMISSION
+        ui.btnMic.onclick = async () => {
+            try {
+                if (!state.mediaRecorder) {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    state.mediaRecorder = new MediaRecorder(stream);
+                    state.mediaRecorder.ondataavailable = e => state.audioChunks.push(e.data);
+                    state.mediaRecorder.onstop = () => {
+                        const blob = new Blob(state.audioChunks, { type: 'audio/wav' });
+                        broadcast(state.currentRoom, "🎤 (TRIDENT VOICE PACKET)", blob);
+                        state.audioChunks = [];
+                    };
+                }
+
+                if (state.mediaRecorder.state === "inactive") {
+                    state.mediaRecorder.start();
+                    ui.btnMic.classList.add('recording');
+                } else {
+                    state.mediaRecorder.stop();
+                    ui.btnMic.classList.remove('recording');
+                }
+            } catch (err) { alert("Microphone access denied or hardware not found."); }
+        };
+
+        window.onkeydown = (e) => { if(e.key === 'Enter') ui.btnSend.click(); };
+    </script>
+</body>
+</html>
