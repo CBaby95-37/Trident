@@ -3,14 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Trident</title>
+    <title>Trident | AV Array</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
     
     <script type="module">
         // =========================================================================================
-        // TRIDENT ALPHA ENGINE v26.3.28e (UNABRIDGED REINFORCED)
-        // Fix: Firestore Image Caching to bypass 4KB Cloud Payload limits
+        // TRIDENT ALPHA ENGINE v26.3.28f (UNABRIDGED WEBRTC EDITION)
+        // Architecture: Firebase Auth + Firestore Caching + SSE Signaling + WebRTC Mesh
+        // Features: Live Video/Audio Calling, Hardware Toggling, Group Chat Sync
         // =========================================================================================
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
@@ -32,6 +33,8 @@
                 this.auth = getAuth(this.app);
                 this.db = getFirestore(this.app);
                 this.provider = new GoogleAuthProvider();
+                
+                // Core State
                 this.state = {
                     user: null, 
                     rawUser: null,
@@ -41,28 +44,36 @@
                     roomSSE: null,
                     activeGroups: new Map(),
                     processedPackets: new Set(),
-                    userCache: {}, // NEW: Local Cache for Profile Pictures
-                    recorder: null,
-                    chunks: [],
-                    pfpBase64: ""
+                    userCache: {},
+                    pfpBase64: "",
+                    // WebRTC State
+                    inCall: false,
+                    localStream: null,
+                    peers: new Map() // Tracks WebRTC connections per sessionID
                 };
+                
+                // Standard STUN servers for WebRTC NAT traversal
+                this.rtcConfig = {
+                    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+                };
+
                 this.initAuth();
             }
 
+            // --- AUTHENTICATION & PROFILE ---
             initAuth() {
                 onAuthStateChanged(this.auth, async (user) => {
                     if (user) {
                         this.state.rawUser = user;
                         try {
-                            const userDoc = await getDoc(doc(this.db, "users", user.uid));
-                            if (userDoc.exists()) {
+                            const userDoc = await getDoc(doc(this.db, "users", user.uid)).catch(() => null);
+                            if (userDoc && userDoc.exists()) {
                                 this.state.user = userDoc.data();
                                 this.launchUI();
                             } else {
                                 this.showProfileSetup(true);
                             }
                         } catch (error) {
-                            console.error("Firestore Init Error:", error);
                             this.showProfileSetup(true);
                         }
                     } else {
@@ -72,11 +83,8 @@
             }
 
             async login() {
-                try {
-                    await signInWithPopup(this.auth, this.provider);
-                } catch (error) {
-                    alert("Authentication Failed. If you use Brave/Adblock, allow popups for this site.");
-                }
+                try { await signInWithPopup(this.auth, this.provider); } 
+                catch (error) { alert("Auth Failed. Check pop-up blockers."); }
             }
 
             showProfileSetup(isFirst) {
@@ -100,12 +108,11 @@
                 const errorTxt = document.getElementById('profile-error');
                 errorTxt.innerText = ""; 
 
-                if (!user) return errorTxt.innerText = "Username cannot be empty.";
-                if (!this.state.pfpBase64) return errorTxt.innerText = "Please select a profile image.";
+                if (!user) return errorTxt.innerText = "Username required.";
+                if (!this.state.pfpBase64) return errorTxt.innerText = "Image required.";
                 
                 btn.innerText = "UPLOADING...";
                 btn.disabled = true;
-                btn.classList.add("opacity-50");
 
                 const profileData = {
                     username: user.toUpperCase(),
@@ -119,34 +126,25 @@
                     document.getElementById('profile-gate').style.display = 'none';
                     btn.innerText = "SAVE AND ENTER";
                     btn.disabled = false;
-                    btn.classList.remove("opacity-50");
                     this.launchUI();
                 } catch (error) {
-                    console.error("Firestore Save Error:", error);
-                    errorTxt.innerText = "Database Error: Ensure Firestore rules are set to Allow Read/Write.";
+                    errorTxt.innerText = "Database Error. Check Firestore Rules.";
                     btn.innerText = "SAVE AND ENTER";
                     btn.disabled = false;
-                    btn.classList.remove("opacity-50");
                 }
             }
 
-            // --- HIGH-SPEED NETWORK LAYER ---
-            async send(text, blob = null) {
+            // --- HIGH-SPEED SIGNALING LAYER ---
+            async send(text) {
                 if (!this.state.currentRoom) return;
-                
-                // NEW: We send the UID instead of the massive Base64 string to stay under the 4KB cloud limit
                 const meta = `${this.state.sessionID}<|>${this.state.user.username}<|>${text}<|>${this.state.rawUser.uid}`;
-                
-                const options = blob ? {
-                    method: 'POST', body: blob,
-                    headers: { 'X-Message': meta, 'X-Title': 'T_VOICE' }
-                } : { method: 'POST', body: meta };
-                
-                fetch(`https://ntfy.sh/${this.state.currentRoom}`, options).catch(e => console.log("Send Err:", e));
+                fetch(`https://ntfy.sh/${this.state.currentRoom}`, { method: 'POST', body: meta }).catch(e => console.log(e));
             }
 
             join(room) {
                 if (this.state.roomSSE) this.state.roomSSE.close();
+                if (this.state.inCall) this.leaveCall(); // Drop AV if switching rooms
+
                 this.state.currentRoom = room;
                 this.state.processedPackets.clear();
                 document.getElementById('chat-stream').innerHTML = `<div class="text-[9px] text-cyan-900 font-bold uppercase tracking-widest p-4 text-center">Sync: ${room}</div>`;
@@ -159,14 +157,188 @@
                     
                     const p = data.message.split('<|>');
                     if (p.length >= 3) {
-                        // Pass msgID, sid, username, message, uid, attachment
-                        this.renderMsg(data.id, p[0], p[1], p[2], p[3], data.attachment);
+                        const sid = p[0];
+                        const text = p[2];
+
+                        // ROUTING: Check if this is a WebRTC Signaling Packet
+                        if (text.startsWith("RTC|")) {
+                            if (sid !== this.state.sessionID) this.handleRTC(sid, text);
+                            return; // Do not render RTC payloads to chat UI
+                        }
+
+                        // Normal Chat Message
+                        this.renderMsg(data.id, sid, p[1], text, p[3]);
                     }
                 };
                 document.getElementById('header-title').innerText = room;
                 this.send("connected.");
             }
 
+            // --- WEBRTC MESH AV PIPELINE ---
+            async toggleCall() {
+                if (this.state.inCall) {
+                    this.leaveCall();
+                } else {
+                    await this.startCall();
+                }
+            }
+
+            async startCall() {
+                try {
+                    // Request Hardware
+                    this.state.localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                    this.state.inCall = true;
+                    
+                    // UI Adjustments
+                    document.getElementById('video-array').classList.remove('hidden');
+                    document.getElementById('btn-call').innerText = '🔴 LEAVE';
+                    document.getElementById('btn-call').classList.add('bg-red-600', 'hover:bg-red-500');
+                    document.getElementById('btn-call').classList.remove('bg-cyan-600', 'hover:bg-cyan-500');
+                    document.getElementById('av-controls').classList.remove('hidden');
+                    
+                    // Render Self
+                    this.addVideoNode(this.state.sessionID, this.state.localStream, true);
+                    
+                    // Broadcast Join to trigger Mesh Offer exchanges
+                    this.send("RTC|JOIN|");
+                } catch (e) {
+                    alert("Hardware Access Denied. Cannot initialize AV Array.");
+                }
+            }
+
+            leaveCall() {
+                this.state.inCall = false;
+                
+                // Terminate Hardware
+                if (this.state.localStream) {
+                    this.state.localStream.getTracks().forEach(t => t.stop());
+                }
+                
+                // Terminate Peer Connections
+                for (let [peerId, pc] of this.state.peers.entries()) {
+                    pc.close();
+                }
+                this.state.peers.clear();
+                
+                // Reset UI
+                document.getElementById('video-array').innerHTML = '';
+                document.getElementById('video-array').classList.add('hidden');
+                document.getElementById('btn-call').innerText = '📞 CALL';
+                document.getElementById('btn-call').classList.remove('bg-red-600', 'hover:bg-red-500');
+                document.getElementById('btn-call').classList.add('bg-cyan-600', 'hover:bg-cyan-500');
+                document.getElementById('av-controls').classList.add('hidden');
+                
+                this.send("RTC|LEAVE|");
+            }
+
+            async handleRTC(peerId, rtcString) {
+                // Format: RTC | TYPE | TARGET_SID | PAYLOAD
+                const parts = rtcString.split('|');
+                const type = parts[1];
+                const target = parts[2];
+                const payload = parts.slice(3).join('|');
+
+                // Ignore direct signals not meant for us (Mesh Filtering)
+                if (target && target !== this.state.sessionID) return;
+
+                if (type === "JOIN") {
+                    if (!this.state.inCall) return;
+                    const pc = this.createPeer(peerId);
+                    const offer = await pc.createOffer();
+                    await pc.setLocalDescription(offer);
+                    this.send(`RTC|OFFER|${peerId}|${JSON.stringify(offer)}`);
+                } 
+                else if (type === "OFFER") {
+                    if (!this.state.inCall) return;
+                    const pc = this.createPeer(peerId);
+                    await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(payload)));
+                    const answer = await pc.createAnswer();
+                    await pc.setLocalDescription(answer);
+                    this.send(`RTC|ANSWER|${peerId}|${JSON.stringify(answer)}`);
+                } 
+                else if (type === "ANSWER") {
+                    const pc = this.state.peers.get(peerId);
+                    if (pc) await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(payload)));
+                } 
+                else if (type === "ICE") {
+                    const pc = this.state.peers.get(peerId);
+                    if (pc) await pc.addIceCandidate(new RTCIceCandidate(JSON.parse(payload)));
+                } 
+                else if (type === "LEAVE") {
+                    const pc = this.state.peers.get(peerId);
+                    if (pc) {
+                        pc.close();
+                        this.state.peers.delete(peerId);
+                    }
+                    const vidWrapper = document.getElementById(`wrapper-${peerId}`);
+                    if (vidWrapper) vidWrapper.remove();
+                }
+            }
+
+            createPeer(peerId) {
+                const pc = new RTCPeerConnection(this.rtcConfig);
+                this.state.peers.set(peerId, pc);
+
+                // Send local hardware tracks to peer
+                this.state.localStream.getTracks().forEach(track => pc.addTrack(track, this.state.localStream));
+
+                // Exchange Routing Candidates
+                pc.onicecandidate = (e) => {
+                    if (e.candidate) {
+                        this.send(`RTC|ICE|${peerId}|${JSON.stringify(e.candidate)}`);
+                    }
+                };
+
+                // Receive Remote Hardware Tracks
+                pc.ontrack = (e) => {
+                    this.addVideoNode(peerId, e.streams[0], false);
+                };
+
+                return pc;
+            }
+
+            addVideoNode(id, stream, isMuted) {
+                if (document.getElementById(`vid-${id}`)) return;
+
+                const wrapper = document.createElement('div');
+                wrapper.id = `wrapper-${id}`;
+                wrapper.className = "relative aspect-video bg-black rounded-2xl overflow-hidden border border-white/10 shadow-2xl";
+                
+                const vid = document.createElement('video');
+                vid.id = `vid-${id}`;
+                vid.autoplay = true;
+                vid.playsInline = true;
+                vid.className = "w-full h-full object-cover";
+                if (isMuted) vid.muted = true;
+                
+                vid.srcObject = stream;
+                wrapper.appendChild(vid);
+                document.getElementById('video-array').appendChild(wrapper);
+            }
+
+            toggleHardware(type) {
+                if (!this.state.localStream) return;
+                
+                if (type === 'audio') {
+                    const track = this.state.localStream.getAudioTracks()[0];
+                    if (track) {
+                        track.enabled = !track.enabled;
+                        const btn = document.getElementById('btn-mic-toggle');
+                        btn.innerText = track.enabled ? '🎤 ON' : '🎤 OFF';
+                        btn.classList.toggle('bg-red-900', !track.enabled);
+                    }
+                } else if (type === 'video') {
+                    const track = this.state.localStream.getVideoTracks()[0];
+                    if (track) {
+                        track.enabled = !track.enabled;
+                        const btn = document.getElementById('btn-cam-toggle');
+                        btn.innerText = track.enabled ? '📷 ON' : '📷 OFF';
+                        btn.classList.toggle('bg-red-900', !track.enabled);
+                    }
+                }
+            }
+
+            // --- LOBBY & DISCOVERY ---
             initLobby() {
                 if (this.state.lobbySSE) this.state.lobbySSE.close();
                 this.state.lobbySSE = new EventSource(`https://ntfy.sh/TRIDENT_LOBBY_V5/sse`);
@@ -188,13 +360,13 @@
                 }, 8000);
             }
 
-            renderMsg(msgId, sid, user, msg, uid, attach) {
+            // --- UI RENDERERS ---
+            renderMsg(msgId, sid, user, msg, uid) {
                 const isSelf = sid === this.state.sessionID;
                 const box = document.getElementById('chat-stream');
                 const div = document.createElement('div');
                 div.className = `flex mb-5 animate__animated animate__fadeInUp animate__faster ${isSelf ? 'justify-end' : 'justify-start'}`;
                 
-                // Default placeholder while loading
                 let initialPfp = isSelf ? this.state.user.pfp : "https://via.placeholder.com/120";
 
                 div.innerHTML = `
@@ -204,14 +376,12 @@
                             <span class="text-[9px] font-bold mb-1 ${isSelf ? 'text-cyan-500' : 'text-gray-600'} uppercase">${isSelf ? 'YOU' : user}</span>
                             <div class="max-w-md p-3 rounded-xl text-sm ${isSelf ? 'bg-cyan-600/10 border border-cyan-500/20 text-white' : 'bg-white/5 border border-white/5 text-gray-300'}">
                                 ${msg}
-                                ${attach ? `<div class="mt-2 text-cyan-400 text-[8px] font-bold uppercase tracking-widest">● Audio Packet</div>` : ''}
                             </div>
                         </div>
                     </div>`;
                 box.appendChild(div);
                 box.scrollTop = box.scrollHeight;
 
-                // NEW: Async Database Fetching for Profile Pictures
                 if (!isSelf && uid) {
                     if (this.state.userCache[uid]) {
                         document.getElementById(`pfp-${msgId}`).src = this.state.userCache[uid];
@@ -223,11 +393,9 @@
                                 const imgEl = document.getElementById(`pfp-${msgId}`);
                                 if (imgEl) imgEl.src = loadedPfp;
                             }
-                        }).catch(e => console.error("PFP Load Error", e));
+                        }).catch(e => {});
                     }
                 }
-
-                if (attach && !isSelf) new Audio(attach.url).play();
             }
 
             renderList() {
@@ -258,7 +426,7 @@
             }
         }
 
-        // --- START ENGINE ---
+        // --- BINDINGS & COMPRESSION ---
         window.Trident = new TridentApp();
         window.doLogin = () => window.Trident.login();
         window.saveProfile = () => window.Trident.saveProfile();
@@ -270,8 +438,9 @@
             window.Trident.send(i.value);
             i.value = '';
         };
+        window.toggleAV = () => window.Trident.toggleCall();
+        window.toggleHardware = (t) => window.Trident.toggleHardware(t);
 
-        // --- FAST IMAGE COMPRESSION ---
         window.processFile = (e) => {
             const file = e.target.files[0];
             if (!file) return;
@@ -280,47 +449,20 @@
                 const img = new Image();
                 img.onload = () => {
                     const canvas = document.createElement('canvas');
-                    const MAX_SIZE = 128; // Small high-speed thumbnail
+                    const MAX_SIZE = 128;
                     let w = img.width; let h = img.height;
                     if (w > h) { if (w > MAX_SIZE) { h *= MAX_SIZE / w; w = MAX_SIZE; } }
                     else { if (h > MAX_SIZE) { w *= MAX_SIZE / h; h = MAX_SIZE; } }
                     canvas.width = w; canvas.height = h;
                     const ctx = canvas.getContext('2d');
                     ctx.drawImage(img, 0, 0, w, h);
-                    
-                    const compressed = canvas.toDataURL('image/jpeg', 0.6); // 60% quality
+                    const compressed = canvas.toDataURL('image/jpeg', 0.6);
                     window.Trident.state.pfpBase64 = compressed;
                     document.getElementById('setup-preview').src = compressed;
                 };
                 img.src = event.target.result;
             };
             reader.readAsDataURL(file);
-        };
-
-        // --- HARDWARE AUDIO LOGIC ---
-        window.toggleMic = async () => {
-            const b = document.getElementById('mic-btn');
-            try {
-                if (!window.Trident.state.recorder) {
-                    const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    window.Trident.state.recorder = new MediaRecorder(s);
-                    window.Trident.state.recorder.ondataavailable = e => window.Trident.state.chunks.push(e.data);
-                    window.Trident.state.recorder.onstop = () => {
-                        const blob = new Blob(window.Trident.state.chunks, { type: 'audio/wav' });
-                        window.Trident.send("🎤 Voice Note", blob);
-                        window.Trident.state.chunks = [];
-                    };
-                }
-                if (window.Trident.state.recorder.state === "inactive") {
-                    window.Trident.state.recorder.start();
-                    b.classList.add('rec-active');
-                } else {
-                    window.Trident.state.recorder.stop();
-                    b.classList.remove('rec-active');
-                }
-            } catch (err) {
-                alert("Microphone Access Denied. Please allow hardware access in your browser settings.");
-            }
         };
 
         document.addEventListener('keydown', (e) => { if(e.key === 'Enter') window.pushMsg(); });
@@ -331,27 +473,26 @@
         .glass { background: rgba(8, 8, 8, 0.85); backdrop-filter: blur(30px); border: 1px solid rgba(255,255,255,0.03); }
         .stream-box::-webkit-scrollbar { width: 2px; }
         .stream-box::-webkit-scrollbar-thumb { background: #333; }
-        @keyframes pulse-red { 0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.3); } 70% { box-shadow: 0 0 0 12px rgba(220, 38, 38, 0); } 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); } }
-        .rec-active { animation: pulse-red 1s infinite; background-color: #dc2626 !important; }
+        .vid-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
     </style>
 </head>
 <body class="h-screen overflow-hidden flex flex-col">
 
-    <!-- GATE: LOGIN -->
+    <!-- LOGIN -->
     <div id="login-gate" class="fixed inset-0 z-[100] flex items-center justify-center bg-[#030303]" style="display:none">
         <div class="w-full max-w-xs p-12 glass rounded-[3rem] text-center border border-white/5 shadow-2xl">
             <svg class="w-16 h-16 text-cyan-500 mx-auto mb-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
             </svg>
             <h1 class="text-5xl font-black italic tracking-tighter mb-2">TRIDENT</h1>
-            <p class="text-[9px] text-gray-700 font-bold uppercase tracking-[0.4em] mb-12">Alpha 26.3.28e</p>
+            <p class="text-[9px] text-gray-700 font-bold uppercase tracking-[0.4em] mb-12">Alpha 26.3.28f</p>
             <button onclick="doLogin()" class="w-full bg-white text-black font-black py-4 rounded-xl transition-all hover:bg-gray-100 text-[10px] uppercase tracking-widest shadow-xl">
-                Sign in with Google
+                Login with Google
             </button>
         </div>
     </div>
 
-    <!-- GATE: PROFILE SETUP -->
+    <!-- PROFILE SETUP -->
     <div id="profile-gate" class="fixed inset-0 z-[110] hidden items-center justify-center bg-[#030303]">
         <div class="w-full max-w-sm p-10 glass rounded-[2rem] border border-white/5 shadow-2xl">
             <h2 class="text-2xl font-black italic tracking-tighter mb-6 text-center">Configure Profile</h2>
@@ -381,21 +522,40 @@
                 <button onclick="createGroup()" class="w-full py-4 bg-cyan-600/10 border border-cyan-500/20 text-cyan-500 font-black text-[10px] uppercase tracking-widest rounded-xl hover:bg-cyan-600 hover:text-white transition-all">
                     Create Group
                 </button>
-                <div class="mt-6 text-[8px] text-gray-700 font-bold uppercase tracking-widest">Alpha 26.3.28e</div>
+                <div class="mt-6 text-[8px] text-gray-700 font-bold uppercase tracking-widest">Alpha 26.3.28f</div>
             </div>
         </aside>
 
-        <main class="flex-1 flex flex-col bg-[#010101]">
-            <header class="p-6 border-b border-white/5 flex justify-between items-center bg-black/40">
+        <main class="flex-1 flex flex-col bg-[#010101] relative">
+            <header class="p-6 border-b border-white/5 flex justify-between items-center bg-black/40 z-10">
                 <h3 id="header-title" class="text-xl font-light tracking-tighter text-gray-400 uppercase italic">Standby</h3>
-                <div class="w-2 h-2 bg-green-500 rounded-full shadow-[0_0_6px_#22c55e]"></div>
+                <div class="flex items-center space-x-4">
+                    <!-- AV CONTROLS -->
+                    <div id="av-controls" class="hidden flex space-x-2">
+                        <button id="btn-cam-toggle" onclick="toggleHardware('video')" class="px-4 py-2 bg-white/5 hover:bg-white/10 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-white/5 transition-colors">📷 ON</button>
+                        <button id="btn-mic-toggle" onclick="toggleHardware('audio')" class="px-4 py-2 bg-white/5 hover:bg-white/10 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-white/5 transition-colors">🎤 ON</button>
+                    </div>
+                    <div class="w-2 h-2 bg-green-500 rounded-full shadow-[0_0_6px_#22c55e]"></div>
+                </div>
             </header>
-            <div id="chat-stream" class="flex-1 overflow-y-auto p-8 stream-box"></div>
-            <footer class="p-6 border-t border-white/5 glass">
+
+            <!-- WEBRTC VIDEO ARRAY -->
+            <div id="video-array" class="hidden p-4 bg-black border-b border-white/5 shadow-2xl z-0 vid-grid max-h-[40vh] overflow-y-auto stream-box">
+                <!-- Video nodes render here -->
+            </div>
+
+            <div id="chat-stream" class="flex-1 overflow-y-auto p-8 stream-box z-0"></div>
+
+            <footer class="p-6 border-t border-white/5 glass z-10">
                 <div class="max-w-4xl mx-auto flex items-center space-x-3">
                     <input type="text" id="msg-in" class="flex-1 bg-black/40 border border-white/5 rounded-xl p-4 outline-none focus:border-cyan-500/20 transition-all text-sm" placeholder="Type here...">
-                    <button id="mic-btn" onclick="toggleMic()" class="w-12 h-12 bg-white/[0.02] border border-white/5 rounded-xl flex items-center justify-center hover:bg-white/[0.04] transition-all text-lg shadow-inner">🎤</button>
-                    <button onclick="pushMsg()" class="px-8 h-12 bg-cyan-600 text-white font-black text-[10px] uppercase tracking-widest rounded-xl transition-all hover:bg-cyan-500 shadow-lg">Send</button>
+                    
+                    <!-- REPLACED MIC BUTTON WITH CALL BUTTON -->
+                    <button id="btn-call" onclick="toggleAV()" class="px-6 h-12 bg-cyan-600 text-white font-black text-[10px] uppercase tracking-widest rounded-xl transition-all hover:bg-cyan-500 shadow-lg flex items-center space-x-2">
+                        <span>📞</span> <span class="hidden md:inline">CALL</span>
+                    </button>
+                    
+                    <button onclick="pushMsg()" class="px-8 h-12 bg-white/10 border border-white/5 text-white font-black text-[10px] uppercase tracking-widest rounded-xl transition-all hover:bg-white/20 shadow-lg">Send</button>
                 </div>
             </footer>
         </main>
