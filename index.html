@@ -9,7 +9,7 @@
     
     <script type="module">
         // =========================================================================================
-        // TRIDENT ALPHA ENGINE
+        // TRIDENT ALPHA ENGINE v26.3.28a
         // =========================================================================================
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
@@ -78,7 +78,7 @@
                 this.state.currentRoom = roomID;
                 this.state.processedPackets.clear();
                 
-                document.getElementById('chat-stream').innerHTML = `<div class="text-[10px] text-cyan-700 font-bold uppercase tracking-widest mb-6 text-center">Joined ${roomID}</div>`;
+                document.getElementById('chat-stream').innerHTML = `<div class="text-[9px] text-cyan-800 font-bold uppercase tracking-widest mb-6 text-center">Synced: ${roomID}</div>`;
                 
                 this.state.roomSSE = new EventSource(`https://ntfy.sh/${roomID}/sse`);
                 this.state.roomSSE.onmessage = (e) => {
@@ -96,8 +96,9 @@
             }
 
             initLobby() {
-                const lobby = new EventSource(`https://ntfy.sh/TRIDENT_LOBBY_V5/sse`);
-                lobby.onmessage = (e) => {
+                if (this.state.lobbySSE) this.state.lobbySSE.close();
+                this.state.lobbySSE = new EventSource(`https://ntfy.sh/TRIDENT_LOBBY_V5/sse`);
+                this.state.lobbySSE.onmessage = (e) => {
                     const p = JSON.parse(e.data);
                     const parts = p.message.split('|');
                     if (parts[0] === "HB") {
@@ -119,12 +120,12 @@
                 const isSelf = sid === this.state.sessionID;
                 const box = document.getElementById('chat-stream');
                 const div = document.createElement('div');
-                div.className = `flex flex-col mb-4 animate__animated animate__fadeInUp animate__faster ${isSelf ? 'items-end' : 'items-start'}`;
+                div.className = `flex flex-col mb-5 animate__animated animate__fadeInUp animate__faster ${isSelf ? 'items-end' : 'items-start'}`;
                 div.innerHTML = `
-                    <span class="text-[10px] font-bold mb-1 ${isSelf ? 'text-cyan-500' : 'text-gray-600'} uppercase">${isSelf ? 'YOU' : user}</span>
-                    <div class="max-w-[85%] p-3 rounded-xl text-sm ${isSelf ? 'bg-cyan-600/10 border border-cyan-500/20 text-white' : 'bg-white/5 border border-white/5 text-gray-300'}">
+                    <span class="text-[9px] font-bold mb-1 ${isSelf ? 'text-cyan-500' : 'text-gray-600'} uppercase">${isSelf ? 'YOU' : user}</span>
+                    <div class="max-w-[80%] p-3 rounded-xl text-sm ${isSelf ? 'bg-cyan-600/10 border border-cyan-500/20 text-white' : 'bg-white/5 border border-white/5 text-gray-300'}">
                         ${msg}
-                        ${attach ? `<div class="mt-2 text-cyan-400 text-[9px] font-bold">● Voice Note</div>` : ''}
+                        ${attach ? `<div class="mt-2 text-cyan-400 text-[8px] font-bold">● Audio</div>` : ''}
                     </div>`;
                 box.appendChild(div);
                 box.scrollTop = box.scrollHeight;
@@ -137,7 +138,7 @@
                 this.state.activeGroups.forEach(g => {
                     const btn = document.createElement('button');
                     btn.className = "w-full text-left p-4 mb-2 rounded-xl bg-white/5 border border-white/5 hover:border-cyan-500/40 transition-all";
-                    btn.innerHTML = `<div class="text-xs font-bold text-white">${g.user}'s Group</div><div class="text-[9px] text-gray-600 font-mono uppercase">${g.id}</div>`;
+                    btn.innerHTML = `<div class="text-xs font-bold text-white">${g.user}</div><div class="text-[8px] text-gray-600 font-mono uppercase">${g.id}</div>`;
                     btn.onclick = () => this.join(g.id);
                     list.appendChild(btn);
                 });
@@ -181,54 +182,54 @@
             }
             if (window.App.state.recorder.state === "inactive") {
                 window.App.state.recorder.start();
-                b.classList.add('recording-ui');
+                b.classList.add('rec-active');
             } else {
                 window.App.state.recorder.stop();
-                b.classList.remove('recording-ui');
+                b.classList.remove('rec-active');
             }
         };
         document.addEventListener('keydown', (e) => { if(e.key === 'Enter') window.sendMsg(); });
     </script>
 
     <style>
-        body { background-color: #050505; color: #fff; letter-spacing: -0.01em; }
-        .glass { background: rgba(10, 10, 10, 0.8); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.02); }
+        body { background-color: #030303; color: #fff; letter-spacing: -0.01em; }
+        .glass { background: rgba(8, 8, 8, 0.8); backdrop-filter: blur(25px); border: 1px solid rgba(255,255,255,0.02); }
         .stream-box::-webkit-scrollbar { width: 2px; }
         .stream-box::-webkit-scrollbar-thumb { background: #222; }
-        @keyframes pulse-red { 0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.4); } 70% { box-shadow: 0 0 0 15px rgba(220, 38, 38, 0); } 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); } }
-        .recording-ui { animation: pulse-red 1s infinite; background-color: #dc2626 !important; }
-        .trident-logo { filter: drop-shadow(0 0 10px rgba(0, 122, 204, 0.5)); }
+        @keyframes pulse-red { 0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.3); } 70% { box-shadow: 0 0 0 12px rgba(220, 38, 38, 0); } 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); } }
+        .rec-active { animation: pulse-red 1s infinite; background-color: #dc2626 !important; }
+        .logo-glow { filter: drop-shadow(0 0 8px rgba(0, 122, 204, 0.4)); }
     </style>
 </head>
 <body class="h-screen overflow-hidden flex flex-col">
 
-    <!-- LOGIN -->
-    <div id="login-gate" class="fixed inset-0 z-[100] flex items-center justify-center bg-[#050505]">
-        <div class="w-full max-w-xs p-10 glass rounded-[2.5rem] text-center border border-white/5">
-            <svg class="w-16 h-16 text-cyan-500 mx-auto mb-6 trident-logo" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <!-- LOGIN SCREEN -->
+    <div id="login-gate" class="fixed inset-0 z-[100] flex items-center justify-center bg-[#030303]">
+        <div class="w-full max-w-xs p-12 glass rounded-[3rem] text-center border border-white/5">
+            <svg class="w-16 h-16 text-cyan-500 mx-auto mb-6 logo-glow" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
             </svg>
-            <h1 class="text-4xl font-black italic tracking-tighter mb-1">TRIDENT</h1>
-            <p class="text-[10px] text-gray-600 font-bold uppercase tracking-widest mb-10">Alpha 25.1.30a</p>
+            <h1 class="text-5xl font-black italic tracking-tighter mb-2">TRIDENT</h1>
+            <p class="text-[9px] text-gray-700 font-bold uppercase tracking-[0.4em] mb-12">Alpha 26.3.28a</p>
             
-            <button onclick="doLogin()" class="w-full bg-white text-black font-black py-4 rounded-xl transition-all hover:bg-gray-200 text-xs uppercase tracking-widest">
-                Sign in with Google
+            <button onclick="doLogin()" class="w-full bg-white text-black font-black py-4 rounded-xl transition-all hover:bg-gray-100 text-[10px] uppercase tracking-widest">
+                Login with Google
             </button>
         </div>
     </div>
 
-    <!-- APP -->
+    <!-- MAIN APP -->
     <div id="app-main" class="flex flex-1 h-full hidden">
         
         <!-- SIDEBAR -->
         <aside class="w-72 glass border-r border-white/5 flex flex-col">
             <div class="p-6">
-                <div class="flex items-center space-x-3 mb-10 p-3 bg-white/[0.02] border border-white/5 rounded-xl">
+                <div class="flex items-center space-x-3 mb-10 p-3 bg-white/[0.01] border border-white/5 rounded-xl">
                     <img id="u-img" class="w-8 h-8 rounded-full border border-cyan-500/20" src="" alt="">
-                    <span id="u-name" class="text-[11px] font-black truncate uppercase tracking-tight">---</span>
+                    <span id="u-name" class="text-[10px] font-black truncate uppercase tracking-tight">---</span>
                 </div>
 
-                <h2 class="text-[10px] font-black text-gray-600 uppercase tracking-widest mb-4 ml-2">Groups</h2>
+                <h2 class="text-[9px] font-black text-gray-700 uppercase tracking-widest mb-4 ml-2">Groups</h2>
                 <div id="group-list" class="space-y-1 overflow-y-auto max-h-[60vh] stream-box"></div>
             </div>
             
@@ -236,26 +237,26 @@
                 <button onclick="createRoom()" class="w-full py-4 bg-cyan-600/10 border border-cyan-500/20 text-cyan-500 font-black text-[10px] uppercase tracking-widest rounded-xl hover:bg-cyan-600 hover:text-white transition-all">
                     Create Group
                 </button>
-                <div class="text-center mt-4 text-[8px] text-gray-700 font-bold uppercase tracking-widest">Alpha 25.1.30a</div>
+                <div class="text-center mt-6 text-[8px] text-gray-800 font-bold uppercase tracking-widest">Alpha 26.3.28a</div>
             </div>
         </aside>
 
-        <!-- CHAT -->
-        <main class="flex-1 flex flex-col bg-[#020202]">
-            <header class="p-6 border-b border-white/5 flex justify-between items-center bg-black/20">
-                <h3 id="header-title" class="text-xl font-light tracking-tighter text-gray-400 uppercase italic">Standby</h3>
-                <div class="w-2 h-2 bg-green-500 rounded-full shadow-[0_0_8px_#22c55e]"></div>
+        <!-- CHAT VIEW -->
+        <main class="flex-1 flex flex-col bg-[#010101]">
+            <header class="p-6 border-b border-white/5 flex justify-between items-center bg-black/40">
+                <h3 id="header-title" class="text-xl font-light tracking-tighter text-gray-400 uppercase italic">Idle</h3>
+                <div class="w-2 h-2 bg-green-500 rounded-full shadow-[0_0_6px_#22c55e]"></div>
             </header>
 
             <div id="chat-stream" class="flex-1 overflow-y-auto p-8 stream-box"></div>
 
             <footer class="p-6 border-t border-white/5 glass">
                 <div class="max-w-4xl mx-auto flex items-center space-x-3">
-                    <input type="text" id="msg-in" class="flex-1 bg-black/50 border border-white/5 rounded-xl p-4 outline-none focus:border-cyan-500/20 transition-all text-sm" placeholder="Message...">
-                    <button id="mic-btn" onclick="toggleMic()" class="w-12 h-12 bg-white/[0.03] border border-white/5 rounded-xl flex items-center justify-center hover:bg-white/[0.05] transition-all text-lg">
+                    <input type="text" id="msg-in" class="flex-1 bg-black/40 border border-white/5 rounded-xl p-4 outline-none focus:border-cyan-500/20 transition-all text-sm" placeholder="Type here...">
+                    <button id="mic-btn" onclick="toggleMic()" class="w-12 h-12 bg-white/[0.02] border border-white/5 rounded-xl flex items-center justify-center hover:bg-white/[0.04] transition-all text-lg shadow-inner">
                         🎤
                     </button>
-                    <button onclick="sendMsg()" class="px-8 h-12 bg-cyan-600 text-white font-black text-[11px] uppercase tracking-widest rounded-xl transition-all hover:bg-cyan-500">
+                    <button onclick="sendMsg()" class="px-8 h-12 bg-cyan-600 text-white font-black text-[10px] uppercase tracking-widest rounded-xl transition-all hover:bg-cyan-500">
                         Send
                     </button>
                 </div>
