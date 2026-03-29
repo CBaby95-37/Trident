@@ -3,15 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Trident | Full Sync Array</title>
+    <title>Trident | WSS Array</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
     
     <script type="module">
         // =========================================================================================
-        // TRIDENT ALPHA ENGINE v26.3.28i (UNABRIDGED RESTORATION)
-        // Fix: Implemented strict payload parsing to prevent EventSource silent crashes
-        // Features: History Sync, Live Roster, Global Groups, WebRTC Mesh, Firestore Caching
+        // TRIDENT ALPHA ENGINE v26.3.28j (UNABRIDGED WEBSOCKET EDITION)
+        // Fix 1: Switched to WSS (WebSockets) to bypass Chrome SSE connection limits/firewalls
+        // Fix 2: Dynamic Project-Isolated Lobbies to prevent Ntfy.sh Anti-Spam Bans
+        // Fix 3: Patched setInterval memory leaks causing heartbeat flooding
         // =========================================================================================
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
@@ -34,23 +35,25 @@
                 this.db = getFirestore(this.app);
                 this.provider = new GoogleAuthProvider();
                 
+                // Dynamic Private Lobby based on your Firebase Project ID
+                this.LOBBY_TOPIC = "TRIDENT_NET_" + CONFIG.projectId.replace(/[^a-zA-Z0-9]/g, '').substring(0,8).toUpperCase();
+                
                 this.state = {
                     user: null, 
                     rawUser: null,
                     sessionID: Math.random().toString(36).substring(2, 15),
                     currentRoom: null,
-                    lobbySSE: null,
-                    roomSSE: null,
+                    lobbyWS: null, // Upgraded to WebSocket
+                    roomWS: null,  // Upgraded to WebSocket
                     activeGroups: new Map(),
                     processedPackets: new Set(),
                     userCache: {},
                     pfpBase64: "",
                     
-                    roomUsers: new Map(), // Live Roster
-                    
+                    roomUsers: new Map(), 
                     inCall: false,
                     localStream: null,
-                    peers: new Map() // WebRTC Connections
+                    peers: new Map() 
                 };
                 
                 this.rtcConfig = {
@@ -59,6 +62,10 @@
                         { urls: 'stun:stun1.l.google.com:19302' }
                     ]
                 };
+
+                // Timers
+                this.lobbyInterval = null;
+                this.rosterInterval = null;
 
                 this.initAuth();
             }
@@ -139,15 +146,19 @@
                 }
             }
 
-            // --- HIGH-SPEED SIGNALING LAYER ---
+            // --- HIGH-SPEED WEBSOCKET LAYER ---
             async send(text) {
                 if (!this.state.currentRoom) return;
                 const meta = `${this.state.sessionID}<|>${this.state.user.username}<|>${text}<|>${this.state.rawUser.uid}`;
-                fetch(`https://ntfy.sh/${this.state.currentRoom}`, { method: 'POST', body: meta }).catch(e => {});
+                
+                try {
+                    const res = await fetch(`https://ntfy.sh/${this.state.currentRoom}`, { method: 'POST', body: meta });
+                    if (!res.ok) console.warn("Transmission Warning:", res.status);
+                } catch (e) { console.error("Transmission Error:", e); }
             }
 
-            join(room) {
-                if (this.state.roomSSE) this.state.roomSSE.close();
+            async join(room) {
+                if (this.state.roomWS) this.state.roomWS.close();
                 if (this.state.inCall) this.leaveCall();
 
                 this.state.currentRoom = room;
@@ -157,27 +168,34 @@
                 document.getElementById('chat-stream').innerHTML = '';
                 document.getElementById('header-title').innerText = room;
                 document.getElementById('room-users-list').innerHTML = '';
+                document.getElementById('status-text').innerText = "WSS CONNECTING...";
+                document.getElementById('status-text').className = "text-[9px] font-black text-yellow-600 tracking-widest uppercase px-4 py-2 border border-white/5 rounded-full";
+
+                // 1. CONNECT WEBSOCKET (Massive stability upgrade over SSE)
+                this.state.roomWS = new WebSocket(`wss://ntfy.sh/${room}/ws`);
                 
-                // 1. OPEN LIVE STREAM FIRST (Ensures we don't miss packets while fetching history)
-                this.state.roomSSE = new EventSource(`https://ntfy.sh/${room}/sse`);
-                this.state.roomSSE.onmessage = (e) => {
+                this.state.roomWS.onopen = () => {
+                    document.getElementById('status-text').innerText = "WSS SECURED";
+                    document.getElementById('status-text').className = "text-[9px] font-black text-green-500 tracking-widest uppercase px-4 py-2 border border-green-500/20 rounded-full bg-green-500/10";
+                    this.send("SYS_JOIN");
+                };
+
+                this.state.roomWS.onmessage = (e) => {
                     try {
                         const data = JSON.parse(e.data);
-                        // Strict check to avoid Keep-Alive crashes
                         if (data.event === "message" && data.message) {
                             if (this.state.processedPackets.has(data.id)) return;
                             this.state.processedPackets.add(data.id);
                             this.processIncomingData(data, false); 
                         }
-                    } catch (err) { console.error("SSE Parse Error", err); }
+                    } catch (err) {}
                 };
 
-                // 2. FETCH HISTORY ASYNCHRONOUSLY
+                // 2. FETCH HISTORY
                 fetch(`https://ntfy.sh/${room}/json?poll=1&limit=50`).then(async res => {
                     if (res.ok) {
                         const historyText = await res.text();
-                        const lines = historyText.trim().split('\n').reverse(); // Process oldest to newest
-                        
+                        const lines = historyText.trim().split('\n').reverse(); 
                         for (const line of lines) {
                             if (!line) continue;
                             try {
@@ -189,17 +207,13 @@
                             } catch (err) {}
                         }
                     }
-                    
                     const divider = document.createElement('div');
                     divider.className = "text-[9px] text-cyan-900 font-bold uppercase tracking-widest p-4 text-center border-b border-cyan-900/30 mb-6 mt-4";
-                    divider.innerText = `Live Stream Connected: ${room}`;
+                    divider.innerText = `WebSocket Pipeline Active: ${room}`;
                     document.getElementById('chat-stream').appendChild(divider);
-                    
                 }).catch(e => console.log("History fetch ignored."));
-
-                // Announce presence
-                this.send("SYS_JOIN");
                 
+                // Roster Heartbeat
                 if (this.rosterInterval) clearInterval(this.rosterInterval);
                 this.rosterInterval = setInterval(() => {
                     if (this.state.currentRoom) this.send("SYS_PING");
@@ -210,29 +224,25 @@
             processIncomingData(data, isHistory) {
                 if (!data || !data.message) return;
                 const p = data.message.split('<|>');
-                if (p.length < 3) return; // Needs at least SID, Username, Text
+                if (p.length < 3) return; 
 
                 const sid = p[0];
                 const username = p[1];
                 const text = p[2];
                 const uid = p.length > 3 ? p[3] : null;
 
-                // Update User Roster
                 if (uid) {
                     this.state.roomUsers.set(sid, { name: username, uid: uid, ts: Date.now() });
-                    if (!isHistory) this.renderRoster(); // Don't constantly redraw roster during history dump
+                    if (!isHistory) this.renderRoster(); 
                 }
 
-                // WebRTC Signaling Catch
                 if (text.startsWith("RTC|")) {
                     if (sid !== this.state.sessionID && !isHistory) this.handleRTC(sid, text);
                     return; 
                 }
                 
-                // System Messages Catch
                 if (text === "SYS_JOIN" || text === "SYS_PING") return;
 
-                // Render Normal Chat
                 this.renderMsg(data.id, sid, username, text, uid, isHistory);
             }
 
@@ -242,10 +252,10 @@
                 list.innerHTML = '';
                 
                 list.innerHTML += `
-                    <div class="flex items-center space-x-3 p-2 bg-white/5 rounded-xl border border-cyan-500/20">
+                    <div class="flex items-center space-x-3 p-2 bg-white/5 rounded-xl border border-cyan-500/20 shadow-md">
                         <div class="relative">
                             <img src="${this.state.user.pfp}" class="w-6 h-6 rounded-full object-cover bg-black">
-                            <div class="absolute bottom-0 right-0 w-2 h-2 bg-green-500 rounded-full border border-black"></div>
+                            <div class="absolute bottom-0 right-0 w-2 h-2 bg-green-500 rounded-full border border-black shadow-[0_0_5px_#22c55e]"></div>
                         </div>
                         <span class="text-[10px] font-black text-cyan-500 uppercase tracking-widest">YOU</span>
                     </div>`;
@@ -260,7 +270,7 @@
                                 <img id="roster-pfp-${v.uid}" src="${pfp}" class="w-6 h-6 rounded-full object-cover opacity-80 bg-black">
                                 <div class="absolute bottom-0 right-0 w-2 h-2 bg-green-500 rounded-full border border-black"></div>
                             </div>
-                            <span class="text-[10px] font-bold text-gray-400 uppercase tracking-widest truncate">${v.name}</span>
+                            <span class="text-[10px] font-bold text-gray-300 uppercase tracking-widest truncate">${v.name}</span>
                         </div>`;
                         
                     if (!this.state.userCache[v.uid]) {
@@ -319,7 +329,6 @@
             leaveCall() {
                 this.state.inCall = false;
                 if (this.state.localStream) this.state.localStream.getTracks().forEach(t => t.stop());
-                
                 for (let [peerId, pc] of this.state.peers.entries()) { pc.close(); }
                 this.state.peers.clear();
                 
@@ -396,7 +405,7 @@
 
                 const wrapper = document.createElement('div');
                 wrapper.id = `wrapper-${id}`;
-                wrapper.className = "relative aspect-video bg-[#111] rounded-2xl overflow-hidden border border-white/10 shadow-2xl flex-1 min-w-[200px] max-w-[300px]";
+                wrapper.className = "relative aspect-video bg-[#0a0a0a] rounded-2xl overflow-hidden border border-white/10 shadow-2xl flex-1 min-w-[200px] max-w-[300px]";
                 
                 const vid = document.createElement('video');
                 vid.id = `vid-${id}`;
@@ -408,7 +417,7 @@
                 vid.srcObject = stream;
                 
                 const label = document.createElement('div');
-                label.className = "absolute bottom-2 left-2 bg-black/60 px-3 py-1 rounded-lg text-[9px] font-bold text-white uppercase tracking-widest backdrop-blur-sm";
+                label.className = "absolute bottom-2 left-2 bg-black/70 px-3 py-1 rounded-lg text-[9px] font-bold text-white uppercase tracking-widest backdrop-blur-md border border-white/5";
                 label.innerText = nameLabel;
 
                 wrapper.appendChild(vid);
@@ -425,6 +434,7 @@
                         const btn = document.getElementById('btn-mic-toggle');
                         btn.innerText = track.enabled ? '🎤 ON' : '🎤 MUTED';
                         btn.classList.toggle('bg-red-900', !track.enabled);
+                        btn.classList.toggle('border-red-500/50', !track.enabled);
                     }
                 } else if (type === 'video') {
                     const track = this.state.localStream.getVideoTracks()[0];
@@ -433,15 +443,17 @@
                         const btn = document.getElementById('btn-cam-toggle');
                         btn.innerText = track.enabled ? '📷 ON' : '📷 OFF';
                         btn.classList.toggle('bg-red-900', !track.enabled);
+                        btn.classList.toggle('border-red-500/50', !track.enabled);
                     }
                 }
             }
 
-            // --- LOBBY & DISCOVERY ---
+            // --- LOBBY WEBSOCKET ---
             initLobby() {
-                if (this.state.lobbySSE) this.state.lobbySSE.close();
-                this.state.lobbySSE = new EventSource(`https://ntfy.sh/TRIDENT_LOBBY_V5/sse`);
-                this.state.lobbySSE.onmessage = (e) => {
+                if (this.state.lobbyWS) this.state.lobbyWS.close();
+                
+                this.state.lobbyWS = new WebSocket(`wss://ntfy.sh/${this.LOBBY_TOPIC}/ws`);
+                this.state.lobbyWS.onmessage = (e) => {
                     try {
                         const data = JSON.parse(e.data);
                         if (data.event === "message" && data.message) {
@@ -453,8 +465,12 @@
                         }
                     } catch (err) {}
                 };
-                setInterval(() => {
-                    if (this.state.currentRoom) fetch(`https://ntfy.sh/TRIDENT_LOBBY_V5`, { method: 'POST', body: `HB|${this.state.currentRoom}|${this.state.user.username}` });
+
+                if (this.lobbyInterval) clearInterval(this.lobbyInterval);
+                this.lobbyInterval = setInterval(() => {
+                    if (this.state.currentRoom) {
+                        fetch(`https://ntfy.sh/${this.LOBBY_TOPIC}`, { method: 'POST', body: `HB|${this.state.currentRoom}|${this.state.user.username}` }).catch(e=>{});
+                    }
                     this.cleanupGroups();
                 }, 8000);
             }
@@ -464,8 +480,8 @@
                 list.innerHTML = '';
                 this.state.activeGroups.forEach(g => {
                     const btn = document.createElement('button');
-                    btn.className = "w-full text-left p-4 mb-2 rounded-xl bg-white/5 border border-white/5 hover:border-cyan-500/40 transition-all";
-                    btn.innerHTML = `<div class="text-xs font-bold text-white">${g.user}'s Group</div><div class="text-[8px] text-gray-600 font-mono uppercase">${g.id}</div>`;
+                    btn.className = "w-full text-left p-4 mb-3 rounded-2xl bg-white/[0.02] border border-white/5 hover:border-cyan-500/40 hover:bg-white/[0.04] transition-all group shadow-sm";
+                    btn.innerHTML = `<div class="text-xs font-black text-white uppercase tracking-tighter group-hover:text-cyan-400 transition-colors">${g.user}'S GROUP</div><div class="text-[8px] text-gray-500 font-bold uppercase tracking-widest mt-1">ID: ${g.id}</div>`;
                     btn.onclick = () => this.join(g.id);
                     list.appendChild(btn);
                 });
@@ -473,8 +489,11 @@
 
             cleanupGroups() {
                 const now = Date.now();
-                this.state.activeGroups.forEach((v, k) => { if (now - v.ts > 30000) this.state.activeGroups.delete(k); });
-                this.renderList();
+                let changed = false;
+                this.state.activeGroups.forEach((v, k) => { 
+                    if (now - v.ts > 30000) { this.state.activeGroups.delete(k); changed = true; } 
+                });
+                if (changed) this.renderList();
             }
 
             // --- MESSAGE UI RENDERING ---
@@ -482,7 +501,7 @@
                 const isSelf = sid === this.state.sessionID;
                 const box = document.getElementById('chat-stream');
                 const div = document.createElement('div');
-                div.className = `flex mb-5 ${!isHistory ? 'animate__animated animate__fadeInUp animate__faster' : ''} ${isSelf ? 'justify-end' : 'justify-start'}`;
+                div.className = `flex mb-6 ${!isHistory ? 'animate__animated animate__fadeInUp animate__faster' : ''} ${isSelf ? 'justify-end' : 'justify-start'}`;
                 
                 let initialPfp = isSelf ? this.state.user.pfp : "https://via.placeholder.com/120";
 
@@ -490,14 +509,13 @@
                     <div class="flex ${isSelf ? 'flex-row-reverse' : 'flex-row'} items-start max-w-[85%]">
                         <img id="pfp-${msgId}" src="${initialPfp}" class="w-8 h-8 rounded-full border border-white/10 object-cover shadow-lg ${isSelf ? 'ml-3' : 'mr-3'} bg-[#111]">
                         <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'}">
-                            <span class="text-[9px] font-bold mb-1 ${isSelf ? 'text-cyan-500' : 'text-gray-600'} uppercase">${isSelf ? 'YOU' : user}</span>
-                            <div class="p-3 rounded-xl text-sm ${isSelf ? 'bg-cyan-600/10 border border-cyan-500/20 text-white' : 'bg-white/5 border border-white/5 text-gray-300'} break-words whitespace-pre-wrap w-full">
+                            <span class="text-[9px] font-black mb-1 ${isSelf ? 'text-cyan-500' : 'text-gray-500'} uppercase tracking-widest">${isSelf ? 'YOU' : user}</span>
+                            <div class="p-4 rounded-2xl text-[13px] leading-relaxed ${isSelf ? 'bg-cyan-600/10 border border-cyan-500/20 text-white rounded-tr-sm' : 'bg-white/[0.03] border border-white/5 text-gray-300 rounded-tl-sm'} break-words whitespace-pre-wrap w-full shadow-sm">
                                 ${msg}
                             </div>
                         </div>
                     </div>`;
                 
-                // Prepend if it's a history item so the order is correct
                 if (isHistory && box.firstChild) {
                     box.insertBefore(div, box.firstChild);
                 } else {
@@ -531,12 +549,12 @@
             }
         }
 
-        // --- BINDINGS & COMPRESSION ---
+        // --- BINDINGS ---
         window.Trident = new TridentApp();
         window.doLogin = () => window.Trident.login();
         window.saveProfile = () => window.Trident.saveProfile();
         window.editProfile = () => window.Trident.showProfileSetup(false);
-        window.createGroup = () => window.Trident.join("T_" + Math.random().toString(36).substring(2, 8).toUpperCase());
+        window.createGroup = () => window.Trident.join("TR_" + Math.random().toString(36).substring(2, 9).toUpperCase());
         window.pushMsg = () => {
             const i = document.getElementById('msg-in');
             if (!i.value) return;
@@ -561,7 +579,7 @@
                     canvas.width = w; canvas.height = h;
                     const ctx = canvas.getContext('2d');
                     ctx.drawImage(img, 0, 0, w, h);
-                    const compressed = canvas.toDataURL('image/jpeg', 0.6);
+                    const compressed = canvas.toDataURL('image/jpeg', 0.7);
                     window.Trident.state.pfpBase64 = compressed;
                     document.getElementById('setup-preview').src = compressed;
                 };
@@ -574,111 +592,115 @@
     </script>
 
     <style>
-        body { background-color: #030303; color: #fff; font-family: 'Segoe UI', sans-serif; }
-        .glass { background: rgba(8, 8, 8, 0.85); backdrop-filter: blur(30px); border: 1px solid rgba(255,255,255,0.03); }
-        .stream-box::-webkit-scrollbar { width: 2px; }
-        .stream-box::-webkit-scrollbar-thumb { background: #333; }
+        body { background-color: #030303; color: #fff; font-family: 'Segoe UI', system-ui, sans-serif; }
+        .glass { background: rgba(8, 8, 8, 0.85); backdrop-filter: blur(40px); border: 1px solid rgba(255,255,255,0.03); }
+        .stream-box::-webkit-scrollbar { width: 3px; }
+        .stream-box::-webkit-scrollbar-thumb { background: #222; border-radius: 10px; }
         .vid-grid { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: center; }
     </style>
 </head>
 <body class="h-screen overflow-hidden flex flex-col">
 
-    <!-- LOGIN -->
+    <!-- LOGIN GATE -->
     <div id="login-gate" class="fixed inset-0 z-[100] flex items-center justify-center bg-[#030303]" style="display:none">
         <div class="w-full max-w-xs p-12 glass rounded-[3rem] text-center border border-white/5 shadow-2xl">
             <svg class="w-16 h-16 text-cyan-500 mx-auto mb-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
             </svg>
             <h1 class="text-5xl font-black italic tracking-tighter mb-2">TRIDENT</h1>
-            <p class="text-[9px] text-gray-700 font-bold uppercase tracking-[0.4em] mb-12">Alpha 26.3.28i</p>
-            <button onclick="doLogin()" class="w-full bg-white text-black font-black py-4 rounded-xl transition-all hover:bg-gray-100 text-[10px] uppercase tracking-widest shadow-xl">
+            <p class="text-[9px] text-gray-600 font-bold uppercase tracking-[0.4em] mb-12">Alpha 26.3.28j</p>
+            <button onclick="doLogin()" class="w-full bg-white text-black font-black py-4 rounded-2xl transition-all hover:bg-gray-200 text-[10px] uppercase tracking-widest shadow-xl active:scale-95">
                 Sign in with Google
             </button>
         </div>
     </div>
 
-    <!-- PROFILE SETUP -->
+    <!-- PROFILE SETUP GATE -->
     <div id="profile-gate" class="fixed inset-0 z-[110] hidden items-center justify-center bg-[#030303]">
-        <div class="w-full max-w-sm p-10 glass rounded-[2rem] border border-white/5 shadow-2xl">
-            <h2 class="text-2xl font-black italic tracking-tighter mb-6 text-center">Configure Profile</h2>
-            <div class="flex flex-col items-center mb-6">
-                <img id="setup-preview" class="w-24 h-24 rounded-full border-2 border-cyan-500 mb-4 object-cover bg-black" src="https://via.placeholder.com/120">
+        <div class="w-full max-w-sm p-10 glass rounded-[2.5rem] border border-white/5 shadow-2xl">
+            <h2 class="text-2xl font-black italic tracking-tighter mb-8 text-center text-white">Operator Profile</h2>
+            <div class="flex flex-col items-center mb-8">
+                <div class="relative group cursor-pointer" onclick="document.getElementById('file-in').click()">
+                    <img id="setup-preview" class="w-28 h-28 rounded-full border-[3px] border-cyan-500/50 object-cover bg-black shadow-[0_0_15px_rgba(6,182,212,0.2)] transition-all group-hover:border-cyan-400" src="https://via.placeholder.com/120">
+                    <div class="absolute inset-0 bg-black/50 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                        <span class="text-[9px] font-bold uppercase tracking-widest text-white">Upload</span>
+                    </div>
+                </div>
                 <input type="file" id="file-in" onchange="processFile(event)" class="hidden" accept="image/*">
-                <button onclick="document.getElementById('file-in').click()" class="text-[10px] text-cyan-500 font-bold uppercase tracking-widest hover:text-cyan-400">Upload Avatar</button>
             </div>
-            <input type="text" id="setup-username" class="w-full bg-black/50 border border-white/10 p-4 rounded-xl mb-2 outline-none focus:border-cyan-500 transition-all text-sm text-center font-bold tracking-widest" placeholder="Username">
+            <div class="space-y-2 mb-6">
+                <label class="text-[8px] font-bold text-gray-500 uppercase tracking-widest ml-4">Callsign</label>
+                <input type="text" id="setup-username" class="w-full bg-black/50 border border-white/10 p-5 rounded-2xl outline-none focus:border-cyan-500/50 transition-all text-sm text-center font-bold tracking-widest text-white shadow-inner" placeholder="Enter Callsign...">
+            </div>
             <p id="profile-error" class="text-red-500 text-[10px] font-bold text-center h-6 mb-2"></p>
-            <button id="save-btn" onclick="saveProfile()" class="w-full bg-cyan-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest shadow-lg hover:bg-cyan-500 transition-all">Save and Enter</button>
+            <button id="save-btn" onclick="saveProfile()" class="w-full bg-cyan-600 text-white font-black py-5 rounded-2xl uppercase text-[10px] tracking-[0.2em] shadow-xl hover:bg-cyan-500 transition-all active:scale-95">Save & Initialize</button>
         </div>
     </div>
 
-    <!-- MAIN APP -->
+    <!-- MAIN INTERFACE -->
     <div id="app-main" class="flex flex-1 h-full" style="display:none">
         
-        <!-- SIDEBAR (Discovery + Roster) -->
-        <aside class="w-72 glass border-r border-white/5 flex flex-col z-20">
-            <div class="p-6 flex-1 flex flex-col overflow-hidden">
-                <button onclick="editProfile()" class="flex items-center space-x-3 mb-8 p-3 bg-white/[0.01] border border-white/5 rounded-xl w-full hover:bg-white/[0.04] transition-all text-left">
-                    <img id="u-img" class="w-8 h-8 rounded-full border border-cyan-500/20 object-cover shadow-md" src="" alt="">
-                    <span id="u-name" class="text-[10px] font-black truncate uppercase tracking-widest">---</span>
+        <!-- SIDEBAR -->
+        <aside class="w-[320px] glass border-r border-white/5 flex flex-col z-20">
+            <div class="p-8 flex-1 flex flex-col overflow-hidden">
+                <button onclick="editProfile()" class="flex items-center space-x-4 mb-10 p-4 bg-white/[0.02] border border-white/5 rounded-2xl w-full hover:bg-white/[0.05] transition-all text-left group">
+                    <img id="u-img" class="w-10 h-10 rounded-full border border-cyan-500/30 object-cover shadow-lg" src="" alt="">
+                    <div class="flex flex-col overflow-hidden">
+                        <span id="u-name" class="text-[11px] font-black truncate uppercase tracking-widest text-white group-hover:text-cyan-400 transition-colors">---</span>
+                        <span class="text-[8px] font-bold text-gray-500 uppercase tracking-widest mt-1">Edit Profile</span>
+                    </div>
                 </button>
                 
-                <!-- Room Users (Roster) -->
-                <div class="mb-6 flex-shrink-0 border-b border-white/5 pb-6">
+                <!-- Roster -->
+                <div class="mb-8 flex-shrink-0 border-b border-white/5 pb-8">
                     <div class="flex justify-between items-end mb-4 ml-2">
-                        <h2 class="text-[9px] font-black text-cyan-700 uppercase tracking-widest">In Room</h2>
-                        <span id="roster-count" class="text-[8px] font-bold text-gray-600">0 ONLINE</span>
+                        <h2 class="text-[9px] font-black text-cyan-600 uppercase tracking-widest">Active Nodes</h2>
+                        <span id="roster-count" class="text-[8px] font-bold text-gray-500 bg-white/5 px-2 py-1 rounded-md">0 ONLINE</span>
                     </div>
                     <div id="room-users-list" class="space-y-2 stream-box max-h-[25vh] overflow-y-auto pr-2">
-                        <div class="text-[9px] text-gray-700 italic ml-2">Not in a group.</div>
+                        <div class="text-[9px] text-gray-700 italic ml-2 font-bold uppercase tracking-widest">Array Disconnected</div>
                     </div>
                 </div>
 
-                <!-- Global Groups -->
-                <h2 class="text-[9px] font-black text-gray-700 uppercase tracking-widest mb-4 ml-2 flex-shrink-0">Global Groups</h2>
-                <div id="group-list" class="space-y-1 overflow-y-auto flex-1 stream-box pr-2"></div>
+                <!-- Global Lobbies -->
+                <h2 class="text-[9px] font-black text-gray-600 uppercase tracking-widest mb-4 ml-2 flex-shrink-0">Global Frequencies</h2>
+                <div id="group-list" class="space-y-2 overflow-y-auto flex-1 stream-box pr-2"></div>
             </div>
             
-            <div class="p-6 text-center border-t border-white/5">
-                <button onclick="createGroup()" class="w-full py-4 bg-cyan-600/10 border border-cyan-500/20 text-cyan-500 font-black text-[10px] uppercase tracking-widest rounded-xl hover:bg-cyan-600 hover:text-white transition-all">
-                    Create Group
+            <div class="p-8 border-t border-white/5 bg-black/20">
+                <button onclick="createGroup()" class="w-full py-5 bg-cyan-600/10 border border-cyan-500/20 text-cyan-400 font-black text-[10px] uppercase tracking-[0.2em] rounded-2xl hover:bg-cyan-600 hover:text-white transition-all shadow-lg">
+                    Initialize Group
                 </button>
-                <div class="mt-6 text-[8px] text-gray-700 font-bold uppercase tracking-widest">Alpha 26.3.28i</div>
+                <div class="mt-6 text-center text-[8px] text-gray-700 font-bold uppercase tracking-widest">WSS Array • Alpha 26.3.28j</div>
             </div>
         </aside>
 
         <!-- MAIN VIEW -->
         <main class="flex-1 flex flex-col bg-[#010101] relative">
-            <header class="p-6 border-b border-white/5 flex justify-between items-center bg-black/40 z-10">
-                <h3 id="header-title" class="text-xl font-light tracking-tighter text-gray-400 uppercase italic">Standby</h3>
-                <div class="flex items-center space-x-4">
-                    <!-- AV CONTROLS -->
-                    <div id="av-controls" class="hidden flex space-x-2">
-                        <button id="btn-cam-toggle" onclick="toggleHardware('video')" class="px-4 py-2 bg-white/5 hover:bg-white/10 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-white/5 transition-colors">📷 ON</button>
-                        <button id="btn-mic-toggle" onclick="toggleHardware('audio')" class="px-4 py-2 bg-white/5 hover:bg-white/10 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-white/5 transition-colors">🎤 ON</button>
+            <header class="p-6 border-b border-white/5 flex justify-between items-center bg-black/60 z-10 backdrop-blur-md">
+                <h3 id="header-title" class="text-2xl font-black tracking-tighter text-gray-300 uppercase italic">Standby</h3>
+                <div class="flex items-center space-x-5">
+                    <div id="av-controls" class="hidden flex space-x-3">
+                        <button id="btn-cam-toggle" onclick="toggleHardware('video')" class="px-5 py-2 bg-white/5 hover:bg-white/10 rounded-xl text-[9px] font-black uppercase tracking-widest border border-white/5 transition-all">📷 ON</button>
+                        <button id="btn-mic-toggle" onclick="toggleHardware('audio')" class="px-5 py-2 bg-white/5 hover:bg-white/10 rounded-xl text-[9px] font-bold uppercase tracking-widest border border-white/5 transition-all">🎤 ON</button>
                     </div>
-                    <div class="w-2 h-2 bg-green-500 rounded-full shadow-[0_0_6px_#22c55e]"></div>
+                    <div id="status-text" class="text-[9px] font-black text-gray-600 tracking-widest uppercase px-4 py-2 border border-white/5 rounded-full bg-white/[0.02]">OFFLINE</div>
                 </div>
             </header>
 
-            <!-- WEBRTC VIDEO ARRAY -->
-            <div id="video-array" class="hidden p-4 bg-black border-b border-white/5 shadow-2xl z-0 vid-grid max-h-[40vh] overflow-y-auto stream-box">
-                <!-- Video nodes render here -->
-            </div>
+            <div id="video-array" class="hidden p-6 bg-[#030303] border-b border-white/5 shadow-2xl z-0 vid-grid max-h-[45vh] overflow-y-auto stream-box"></div>
 
-            <!-- CHAT DATA STREAM -->
-            <div id="chat-stream" class="flex-1 overflow-y-auto p-8 stream-box z-0"></div>
+            <div id="chat-stream" class="flex-1 overflow-y-auto p-10 stream-box z-0"></div>
 
-            <!-- TRANSMISSION BAR -->
-            <footer class="p-6 border-t border-white/5 glass z-10">
-                <div class="max-w-4xl mx-auto flex items-center space-x-3">
-                    <input type="text" id="msg-in" class="flex-1 bg-black/40 border border-white/5 rounded-xl p-4 outline-none focus:border-cyan-500/20 transition-all text-sm text-white" placeholder="Broadcast to group...">
+            <footer class="p-8 border-t border-white/5 glass z-10">
+                <div class="max-w-5xl mx-auto flex items-center space-x-4">
+                    <input type="text" id="msg-in" class="flex-1 bg-black/60 border border-white/5 rounded-2xl p-5 outline-none focus:border-cyan-500/30 transition-all text-sm text-white shadow-inner placeholder-gray-700" placeholder="Broadcast payload to array...">
                     
-                    <button id="btn-call" onclick="toggleAV()" class="px-6 h-12 bg-cyan-600 text-white font-black text-[10px] uppercase tracking-widest rounded-xl transition-all hover:bg-cyan-500 shadow-lg flex items-center space-x-2">
-                        <span>📞</span> <span>CALL</span>
+                    <button id="btn-call" onclick="toggleAV()" class="px-8 h-14 bg-cyan-600/20 border border-cyan-500/30 text-cyan-400 font-black text-[10px] uppercase tracking-widest rounded-2xl transition-all hover:bg-cyan-600 hover:text-white hover:border-transparent flex items-center space-x-2">
+                        <span class="text-sm">📞</span> <span>Call</span>
                     </button>
                     
-                    <button onclick="pushMsg()" class="px-8 h-12 bg-white/10 border border-white/5 text-white font-black text-[10px] uppercase tracking-widest rounded-xl transition-all hover:bg-white/20 shadow-lg">Send</button>
+                    <button onclick="pushMsg()" class="px-10 h-14 bg-white/10 border border-white/5 text-white font-black text-[10px] uppercase tracking-widest rounded-2xl transition-all hover:bg-white/20 shadow-lg active:scale-95">Send</button>
                 </div>
             </footer>
         </main>
