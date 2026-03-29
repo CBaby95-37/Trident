@@ -9,8 +9,8 @@
     
     <script type="module">
         // =========================================================================================
-        // TRIDENT ALPHA ENGINE v26.3.28h (UNABRIDGED RESTORATION)
-        // Restored missing rendering functions. All systems nominal.
+        // TRIDENT ALPHA ENGINE v26.3.28i (UNABRIDGED RESTORATION)
+        // Fix: Implemented strict payload parsing to prevent EventSource silent crashes
         // Features: History Sync, Live Roster, Global Groups, WebRTC Mesh, Firestore Caching
         // =========================================================================================
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
@@ -146,7 +146,7 @@
                 fetch(`https://ntfy.sh/${this.state.currentRoom}`, { method: 'POST', body: meta }).catch(e => {});
             }
 
-            async join(room) {
+            join(room) {
                 if (this.state.roomSSE) this.state.roomSSE.close();
                 if (this.state.inCall) this.leaveCall();
 
@@ -158,38 +158,46 @@
                 document.getElementById('header-title').innerText = room;
                 document.getElementById('room-users-list').innerHTML = '';
                 
-                // 1. FETCH HISTORY (Get last 50 messages before opening stream)
-                try {
-                    const historyRes = await fetch(`https://ntfy.sh/${room}/json?poll=1&limit=50`);
-                    if (historyRes.ok) {
-                        const historyText = await historyRes.text();
-                        const lines = historyText.trim().split('\n');
+                // 1. OPEN LIVE STREAM FIRST (Ensures we don't miss packets while fetching history)
+                this.state.roomSSE = new EventSource(`https://ntfy.sh/${room}/sse`);
+                this.state.roomSSE.onmessage = (e) => {
+                    try {
+                        const data = JSON.parse(e.data);
+                        // Strict check to avoid Keep-Alive crashes
+                        if (data.event === "message" && data.message) {
+                            if (this.state.processedPackets.has(data.id)) return;
+                            this.state.processedPackets.add(data.id);
+                            this.processIncomingData(data, false); 
+                        }
+                    } catch (err) { console.error("SSE Parse Error", err); }
+                };
+
+                // 2. FETCH HISTORY ASYNCHRONOUSLY
+                fetch(`https://ntfy.sh/${room}/json?poll=1&limit=50`).then(async res => {
+                    if (res.ok) {
+                        const historyText = await res.text();
+                        const lines = historyText.trim().split('\n').reverse(); // Process oldest to newest
                         
                         for (const line of lines) {
                             if (!line) continue;
-                            const data = JSON.parse(line);
-                            if (data.event === "message" && !this.state.processedPackets.has(data.id)) {
-                                this.state.processedPackets.add(data.id);
-                                this.processIncomingData(data, true); 
-                            }
+                            try {
+                                const data = JSON.parse(line);
+                                if (data.event === "message" && data.message && !this.state.processedPackets.has(data.id)) {
+                                    this.state.processedPackets.add(data.id);
+                                    this.processIncomingData(data, true); 
+                                }
+                            } catch (err) {}
                         }
                     }
-                } catch (e) { console.log("History fetch ignored."); }
+                    
+                    const divider = document.createElement('div');
+                    divider.className = "text-[9px] text-cyan-900 font-bold uppercase tracking-widest p-4 text-center border-b border-cyan-900/30 mb-6 mt-4";
+                    divider.innerText = `Live Stream Connected: ${room}`;
+                    document.getElementById('chat-stream').appendChild(divider);
+                    
+                }).catch(e => console.log("History fetch ignored."));
 
-                // 2. OPEN LIVE STREAM
-                const divider = document.createElement('div');
-                divider.className = "text-[9px] text-cyan-900 font-bold uppercase tracking-widest p-4 text-center border-b border-cyan-900/30 mb-6";
-                divider.innerText = `Live Stream Connected`;
-                document.getElementById('chat-stream').appendChild(divider);
-                
-                this.state.roomSSE = new EventSource(`https://ntfy.sh/${room}/sse`);
-                this.state.roomSSE.onmessage = (e) => {
-                    const data = JSON.parse(e.data);
-                    if (this.state.processedPackets.has(data.id)) return;
-                    this.state.processedPackets.add(data.id);
-                    this.processIncomingData(data, false); 
-                };
-                
+                // Announce presence
                 this.send("SYS_JOIN");
                 
                 if (this.rosterInterval) clearInterval(this.rosterInterval);
@@ -200,17 +208,20 @@
             }
 
             processIncomingData(data, isHistory) {
+                if (!data || !data.message) return;
                 const p = data.message.split('<|>');
-                if (p.length < 4) return; 
+                if (p.length < 3) return; // Needs at least SID, Username, Text
 
                 const sid = p[0];
                 const username = p[1];
                 const text = p[2];
-                const uid = p[3];
+                const uid = p.length > 3 ? p[3] : null;
 
                 // Update User Roster
-                this.state.roomUsers.set(sid, { name: username, uid: uid, ts: Date.now() });
-                this.renderRoster();
+                if (uid) {
+                    this.state.roomUsers.set(sid, { name: username, uid: uid, ts: Date.now() });
+                    if (!isHistory) this.renderRoster(); // Don't constantly redraw roster during history dump
+                }
 
                 // WebRTC Signaling Catch
                 if (text.startsWith("RTC|")) {
@@ -233,7 +244,7 @@
                 list.innerHTML += `
                     <div class="flex items-center space-x-3 p-2 bg-white/5 rounded-xl border border-cyan-500/20">
                         <div class="relative">
-                            <img src="${this.state.user.pfp}" class="w-6 h-6 rounded-full object-cover">
+                            <img src="${this.state.user.pfp}" class="w-6 h-6 rounded-full object-cover bg-black">
                             <div class="absolute bottom-0 right-0 w-2 h-2 bg-green-500 rounded-full border border-black"></div>
                         </div>
                         <span class="text-[10px] font-black text-cyan-500 uppercase tracking-widest">YOU</span>
@@ -246,7 +257,7 @@
                     list.innerHTML += `
                         <div class="flex items-center space-x-3 p-2 hover:bg-white/5 rounded-xl transition-all">
                             <div class="relative">
-                                <img id="roster-pfp-${v.uid}" src="${pfp}" class="w-6 h-6 rounded-full object-cover opacity-80">
+                                <img id="roster-pfp-${v.uid}" src="${pfp}" class="w-6 h-6 rounded-full object-cover opacity-80 bg-black">
                                 <div class="absolute bottom-0 right-0 w-2 h-2 bg-green-500 rounded-full border border-black"></div>
                             </div>
                             <span class="text-[10px] font-bold text-gray-400 uppercase tracking-widest truncate">${v.name}</span>
@@ -257,8 +268,8 @@
                             if (docSnap.exists()) {
                                 const loadedPfp = docSnap.data().pfp;
                                 this.state.userCache[v.uid] = loadedPfp;
-                                const imgEl = document.getElementById(`roster-pfp-${v.uid}`);
-                                if (imgEl) imgEl.src = loadedPfp;
+                                const elements = document.querySelectorAll(`#roster-pfp-${v.uid}`);
+                                elements.forEach(el => el.src = loadedPfp);
                             }
                         }).catch(e => {});
                     }
@@ -308,6 +319,7 @@
             leaveCall() {
                 this.state.inCall = false;
                 if (this.state.localStream) this.state.localStream.getTracks().forEach(t => t.stop());
+                
                 for (let [peerId, pc] of this.state.peers.entries()) { pc.close(); }
                 this.state.peers.clear();
                 
@@ -430,22 +442,24 @@
                 if (this.state.lobbySSE) this.state.lobbySSE.close();
                 this.state.lobbySSE = new EventSource(`https://ntfy.sh/TRIDENT_LOBBY_V5/sse`);
                 this.state.lobbySSE.onmessage = (e) => {
-                    const data = JSON.parse(e.data);
-                    const p = data.message.split('|');
-                    if (p[0] === "HB") {
-                        this.state.activeGroups.set(p[1], { id: p[1], user: p[2], ts: Date.now() });
-                        this.renderSidebar();
-                    }
+                    try {
+                        const data = JSON.parse(e.data);
+                        if (data.event === "message" && data.message) {
+                            const p = data.message.split('|');
+                            if (p[0] === "HB") {
+                                this.state.activeGroups.set(p[1], { id: p[1], user: p[2], ts: Date.now() });
+                                this.renderList();
+                            }
+                        }
+                    } catch (err) {}
                 };
                 setInterval(() => {
-                    if (this.state.currentRoom) {
-                        fetch(`https://ntfy.sh/TRIDENT_LOBBY_V5`, { method: 'POST', body: `HB|${this.state.currentRoom}|${this.state.user.username}` });
-                    }
+                    if (this.state.currentRoom) fetch(`https://ntfy.sh/TRIDENT_LOBBY_V5`, { method: 'POST', body: `HB|${this.state.currentRoom}|${this.state.user.username}` });
                     this.cleanupGroups();
                 }, 8000);
             }
 
-            renderSidebar() {
+            renderList() {
                 const list = document.getElementById('group-list');
                 list.innerHTML = '';
                 this.state.activeGroups.forEach(g => {
@@ -460,7 +474,7 @@
             cleanupGroups() {
                 const now = Date.now();
                 this.state.activeGroups.forEach((v, k) => { if (now - v.ts > 30000) this.state.activeGroups.delete(k); });
-                this.renderSidebar();
+                this.renderList();
             }
 
             // --- MESSAGE UI RENDERING ---
@@ -482,8 +496,14 @@
                             </div>
                         </div>
                     </div>`;
-                box.appendChild(div);
-                box.scrollTop = box.scrollHeight;
+                
+                // Prepend if it's a history item so the order is correct
+                if (isHistory && box.firstChild) {
+                    box.insertBefore(div, box.firstChild);
+                } else {
+                    box.appendChild(div);
+                    box.scrollTop = box.scrollHeight;
+                }
 
                 if (!isSelf && uid) {
                     if (this.state.userCache[uid]) {
@@ -493,8 +513,8 @@
                             if (docSnap.exists()) {
                                 const loadedPfp = docSnap.data().pfp;
                                 this.state.userCache[uid] = loadedPfp;
-                                const imgEl = document.getElementById(`pfp-${msgId}`);
-                                if (imgEl) imgEl.src = loadedPfp;
+                                const elements = document.querySelectorAll(`#pfp-${msgId}`);
+                                elements.forEach(el => el.src = loadedPfp);
                             }
                         }).catch(e => {});
                     }
@@ -570,9 +590,9 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
             </svg>
             <h1 class="text-5xl font-black italic tracking-tighter mb-2">TRIDENT</h1>
-            <p class="text-[9px] text-gray-700 font-bold uppercase tracking-[0.4em] mb-12">Alpha 26.3.28h</p>
+            <p class="text-[9px] text-gray-700 font-bold uppercase tracking-[0.4em] mb-12">Alpha 26.3.28i</p>
             <button onclick="doLogin()" class="w-full bg-white text-black font-black py-4 rounded-xl transition-all hover:bg-gray-100 text-[10px] uppercase tracking-widest shadow-xl">
-                Login with Google
+                Sign in with Google
             </button>
         </div>
     </div>
@@ -623,7 +643,7 @@
                 <button onclick="createGroup()" class="w-full py-4 bg-cyan-600/10 border border-cyan-500/20 text-cyan-500 font-black text-[10px] uppercase tracking-widest rounded-xl hover:bg-cyan-600 hover:text-white transition-all">
                     Create Group
                 </button>
-                <div class="mt-6 text-[8px] text-gray-700 font-bold uppercase tracking-widest">Alpha 26.3.28h</div>
+                <div class="mt-6 text-[8px] text-gray-700 font-bold uppercase tracking-widest">Alpha 26.3.28i</div>
             </div>
         </aside>
 
