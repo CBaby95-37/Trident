@@ -9,7 +9,8 @@
     
     <script type="module">
         // =========================================================================================
-        // TRIDENT ALPHA ENGINE v26.3.28c (UNABRIDGED REINFORCED)
+        // TRIDENT ALPHA ENGINE v26.3.28d (UNABRIDGED REINFORCED)
+        // Fix: Explicit Firestore error handling and button state recovery
         // =========================================================================================
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
@@ -51,11 +52,17 @@
                 onAuthStateChanged(this.auth, async (user) => {
                     if (user) {
                         this.state.rawUser = user;
-                        const userDoc = await getDoc(doc(this.db, "users", user.uid)).catch(() => null);
-                        if (userDoc && userDoc.exists()) {
-                            this.state.user = userDoc.data();
-                            this.launchUI();
-                        } else {
+                        try {
+                            const userDoc = await getDoc(doc(this.db, "users", user.uid));
+                            if (userDoc.exists()) {
+                                this.state.user = userDoc.data();
+                                this.launchUI();
+                            } else {
+                                this.showProfileSetup(true);
+                            }
+                        } catch (error) {
+                            console.error("Firestore Init Error:", error);
+                            // If we can't read from DB, force them to setup profile locally
                             this.showProfileSetup(true);
                         }
                     } else {
@@ -65,48 +72,83 @@
             }
 
             async login() {
-                await signInWithPopup(this.auth, this.provider).catch(e => alert("Pop-up blocked."));
+                try {
+                    await signInWithPopup(this.auth, this.provider);
+                } catch (error) {
+                    alert("Authentication Failed. If you use Brave/Adblock, allow popups for this site.");
+                }
             }
 
             showProfileSetup(isFirst) {
                 document.getElementById('login-gate').style.display = 'none';
                 document.getElementById('app-main').style.display = 'none';
                 document.getElementById('profile-gate').style.display = 'flex';
+                
+                // If they already have a profile, populate the boxes
                 if (!isFirst && this.state.user) {
                     document.getElementById('setup-username').value = this.state.user.username;
                     document.getElementById('setup-preview').src = this.state.user.pfp;
                     this.state.pfpBase64 = this.state.user.pfp;
+                } else if (isFirst && this.state.rawUser) {
+                    // Pull default photo from Google if first time
+                    document.getElementById('setup-preview').src = this.state.rawUser.photoURL || "https://via.placeholder.com/120";
+                    this.state.pfpBase64 = this.state.rawUser.photoURL || "";
                 }
             }
 
             async saveProfile() {
                 const btn = document.getElementById('save-btn');
                 const user = document.getElementById('setup-username').value.trim();
+                const errorTxt = document.getElementById('profile-error');
                 
-                if (!user || !this.state.pfpBase64) return alert("Username and Image required.");
+                errorTxt.innerText = ""; // Clear old errors
+
+                if (!user) {
+                    errorTxt.innerText = "Username cannot be empty.";
+                    return;
+                }
+                if (!this.state.pfpBase64) {
+                    errorTxt.innerText = "Please select a profile image.";
+                    return;
+                }
                 
+                // Lock button to prevent double-clicks
                 btn.innerText = "UPLOADING...";
                 btn.disabled = true;
+                btn.classList.add("opacity-50");
 
-                const profile = {
+                const profileData = {
                     username: user.toUpperCase(),
                     pfp: this.state.pfpBase64,
                     uid: this.state.rawUser.uid
                 };
 
                 try {
-                    await setDoc(doc(this.db, "users", this.state.rawUser.uid), profile);
-                    this.state.user = profile;
+                    // Attempt to write to Firestore
+                    await setDoc(doc(this.db, "users", this.state.rawUser.uid), profileData);
+                    
+                    // Success
+                    this.state.user = profileData;
                     document.getElementById('profile-gate').style.display = 'none';
-                    this.launchUI();
-                } catch (e) {
-                    alert("Firestore Error. Check Console.");
+                    
+                    // Reset Button for next time
                     btn.innerText = "SAVE AND ENTER";
                     btn.disabled = false;
+                    btn.classList.remove("opacity-50");
+                    
+                    this.launchUI();
+                } catch (error) {
+                    console.error("Firestore Save Error:", error);
+                    errorTxt.innerText = "Database Error: Ensure Firestore rules are set to Allow Read/Write.";
+                    
+                    // Restore button so they can try again
+                    btn.innerText = "SAVE AND ENTER";
+                    btn.disabled = false;
+                    btn.classList.remove("opacity-50");
                 }
             }
 
-            // --- High Speed Network Layer ---
+            // --- HIGH-SPEED NETWORK LAYER ---
             async send(text, blob = null) {
                 if (!this.state.currentRoom) return;
                 const meta = `${this.state.sessionID}<|>${this.state.user.username}<|>${text}<|>${this.state.user.pfp}`;
@@ -129,15 +171,18 @@
                     if (this.state.processedPackets.has(data.id)) return;
                     this.state.processedPackets.add(data.id);
                     const p = data.message.split('<|>');
-                    if (p.length >= 3) this.renderMsg(p[0], p[1], p[2], p[3], data.attachment);
+                    if (p.length >= 3) {
+                        this.renderMsg(p[0], p[1], p[2], p[3] || "https://via.placeholder.com/40", data.attachment);
+                    }
                 };
                 document.getElementById('header-title').innerText = room;
                 this.send("online.");
             }
 
             initLobby() {
-                const lobby = new EventSource(`https://ntfy.sh/TRIDENT_LOBBY_V5/sse`);
-                lobby.onmessage = (e) => {
+                if (this.state.lobbySSE) this.state.lobbySSE.close();
+                this.state.lobbySSE = new EventSource(`https://ntfy.sh/TRIDENT_LOBBY_V5/sse`);
+                this.state.lobbySSE.onmessage = (e) => {
                     const data = JSON.parse(e.data);
                     const p = data.message.split('|');
                     if (p[0] === "HB") {
@@ -162,12 +207,12 @@
                 div.className = `flex mb-5 animate__animated animate__fadeInUp animate__faster ${isSelf ? 'justify-end' : 'justify-start'}`;
                 div.innerHTML = `
                     <div class="flex ${isSelf ? 'flex-row-reverse' : 'flex-row'} items-start">
-                        <img src="${pfp}" class="w-8 h-8 rounded-full border border-white/10 object-cover ${isSelf ? 'ml-3' : 'mr-3'}">
+                        <img src="${pfp}" class="w-8 h-8 rounded-full border border-white/10 object-cover shadow-lg ${isSelf ? 'ml-3' : 'mr-3'}">
                         <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'}">
                             <span class="text-[9px] font-bold mb-1 ${isSelf ? 'text-cyan-500' : 'text-gray-600'} uppercase">${isSelf ? 'YOU' : user}</span>
                             <div class="max-w-md p-3 rounded-xl text-sm ${isSelf ? 'bg-cyan-600/10 border border-cyan-500/20 text-white' : 'bg-white/5 border border-white/5 text-gray-300'}">
                                 ${msg}
-                                ${attach ? `<div class="mt-2 text-cyan-400 text-[8px] font-bold">● Audio Packet</div>` : ''}
+                                ${attach ? `<div class="mt-2 text-cyan-400 text-[8px] font-bold uppercase tracking-widest">● Audio Packet</div>` : ''}
                             </div>
                         </div>
                     </div>`;
@@ -196,6 +241,7 @@
 
             launchUI() {
                 document.getElementById('login-gate').style.display = 'none';
+                document.getElementById('profile-gate').style.display = 'none';
                 document.getElementById('app-main').style.display = 'flex';
                 document.getElementById('u-name').innerText = this.state.user.username;
                 document.getElementById('u-img').src = this.state.user.pfp;
@@ -203,7 +249,7 @@
             }
         }
 
-        // --- Start Engine ---
+        // --- START ENGINE ---
         window.Trident = new TridentApp();
         window.doLogin = () => window.Trident.login();
         window.saveProfile = () => window.Trident.saveProfile();
@@ -216,22 +262,24 @@
             i.value = '';
         };
 
-        // --- Fast Image Compressor (Fixes Lag) ---
+        // --- FAST IMAGE COMPRESSION ---
         window.processFile = (e) => {
             const file = e.target.files[0];
+            if (!file) return;
             const reader = new FileReader();
             reader.onload = (event) => {
                 const img = new Image();
                 img.onload = () => {
                     const canvas = document.createElement('canvas');
-                    const MAX_SIZE = 120; // Fast thumbnail size
+                    const MAX_SIZE = 128; // Small high-speed thumbnail
                     let w = img.width; let h = img.height;
                     if (w > h) { if (w > MAX_SIZE) { h *= MAX_SIZE / w; w = MAX_SIZE; } }
                     else { if (h > MAX_SIZE) { w *= MAX_SIZE / h; h = MAX_SIZE; } }
                     canvas.width = w; canvas.height = h;
                     const ctx = canvas.getContext('2d');
                     ctx.drawImage(img, 0, 0, w, h);
-                    const compressed = canvas.toDataURL('image/jpeg', 0.7);
+                    
+                    const compressed = canvas.toDataURL('image/jpeg', 0.6); // 60% quality
                     window.Trident.state.pfpBase64 = compressed;
                     document.getElementById('setup-preview').src = compressed;
                 };
@@ -240,26 +288,32 @@
             reader.readAsDataURL(file);
         };
 
+        // --- HARDWARE AUDIO LOGIC ---
         window.toggleMic = async () => {
             const b = document.getElementById('mic-btn');
-            if (!window.Trident.state.recorder) {
-                const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-                window.Trident.state.recorder = new MediaRecorder(s);
-                window.Trident.state.recorder.ondataavailable = e => window.Trident.state.chunks.push(e.data);
-                window.Trident.state.recorder.onstop = () => {
-                    const blob = new Blob(window.Trident.state.chunks, { type: 'audio/wav' });
-                    window.Trident.send("🎤 Voice Note", blob);
-                    window.Trident.state.chunks = [];
-                };
-            }
-            if (window.Trident.state.recorder.state === "inactive") {
-                window.Trident.state.recorder.start();
-                b.classList.add('rec-active');
-            } else {
-                window.Trident.state.recorder.stop();
-                b.classList.remove('rec-active');
+            try {
+                if (!window.Trident.state.recorder) {
+                    const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    window.Trident.state.recorder = new MediaRecorder(s);
+                    window.Trident.state.recorder.ondataavailable = e => window.Trident.state.chunks.push(e.data);
+                    window.Trident.state.recorder.onstop = () => {
+                        const blob = new Blob(window.Trident.state.chunks, { type: 'audio/wav' });
+                        window.Trident.send("🎤 Voice Note", blob);
+                        window.Trident.state.chunks = [];
+                    };
+                }
+                if (window.Trident.state.recorder.state === "inactive") {
+                    window.Trident.state.recorder.start();
+                    b.classList.add('rec-active');
+                } else {
+                    window.Trident.state.recorder.stop();
+                    b.classList.remove('rec-active');
+                }
+            } catch (err) {
+                alert("Microphone Access Denied. Please allow hardware access in your browser settings.");
             }
         };
+
         document.addEventListener('keydown', (e) => { if(e.key === 'Enter') window.pushMsg(); });
     </script>
 
@@ -276,48 +330,49 @@
 
     <!-- GATE: LOGIN -->
     <div id="login-gate" class="fixed inset-0 z-[100] flex items-center justify-center bg-[#030303]" style="display:none">
-        <div class="w-full max-w-xs p-12 glass rounded-[3rem] text-center border border-white/5">
+        <div class="w-full max-w-xs p-12 glass rounded-[3rem] text-center border border-white/5 shadow-2xl">
             <svg class="w-16 h-16 text-cyan-500 mx-auto mb-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
             </svg>
             <h1 class="text-5xl font-black italic tracking-tighter mb-2">TRIDENT</h1>
-            <p class="text-[9px] text-gray-700 font-bold uppercase tracking-[0.4em] mb-12">Alpha 26.3.28c</p>
-            <button onclick="doLogin()" class="w-full bg-white text-black font-black py-4 rounded-xl transition-all hover:bg-gray-100 text-[10px] uppercase tracking-widest">
-                Login with Google
+            <p class="text-[9px] text-gray-700 font-bold uppercase tracking-[0.4em] mb-12">Alpha 26.3.28d</p>
+            <button onclick="doLogin()" class="w-full bg-white text-black font-black py-4 rounded-xl transition-all hover:bg-gray-100 text-[10px] uppercase tracking-widest shadow-xl">
+                Sign in with Google
             </button>
         </div>
     </div>
 
-    <!-- GATE: PROFILE -->
+    <!-- GATE: PROFILE SETUP -->
     <div id="profile-gate" class="fixed inset-0 z-[110] hidden items-center justify-center bg-[#030303]">
-        <div class="w-full max-w-sm p-10 glass rounded-[2.5rem] border border-white/5 shadow-2xl">
-            <h2 class="text-xl font-bold mb-6 text-center">Setup Profile</h2>
+        <div class="w-full max-w-sm p-10 glass rounded-[2rem] border border-white/5 shadow-2xl">
+            <h2 class="text-2xl font-black italic tracking-tighter mb-6 text-center">Configure Profile</h2>
             <div class="flex flex-col items-center mb-6">
                 <img id="setup-preview" class="w-24 h-24 rounded-full border-2 border-cyan-500 mb-4 object-cover bg-black" src="https://via.placeholder.com/120">
                 <input type="file" id="file-in" onchange="processFile(event)" class="hidden" accept="image/*">
-                <button onclick="document.getElementById('file-in').click()" class="text-[10px] text-cyan-500 font-bold uppercase tracking-widest">Choose Image</button>
+                <button onclick="document.getElementById('file-in').click()" class="text-[10px] text-cyan-500 font-bold uppercase tracking-widest hover:text-cyan-400">Upload Avatar</button>
             </div>
-            <input type="text" id="setup-username" class="w-full bg-black/50 border border-white/10 p-4 rounded-xl mb-6 outline-none focus:border-cyan-500 transition-all text-sm" placeholder="Username">
-            <button id="save-btn" onclick="saveProfile()" class="w-full bg-cyan-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest shadow-lg">Save and Enter</button>
+            <input type="text" id="setup-username" class="w-full bg-black/50 border border-white/10 p-4 rounded-xl mb-2 outline-none focus:border-cyan-500 transition-all text-sm text-center font-bold tracking-widest" placeholder="Username">
+            <p id="profile-error" class="text-red-500 text-[10px] font-bold text-center h-6 mb-2"></p>
+            <button id="save-btn" onclick="saveProfile()" class="w-full bg-cyan-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest shadow-lg hover:bg-cyan-500 transition-all">Save and Enter</button>
         </div>
     </div>
 
-    <!-- APP -->
+    <!-- MAIN APP -->
     <div id="app-main" class="flex flex-1 h-full" style="display:none">
         <aside class="w-72 glass border-r border-white/5 flex flex-col">
             <div class="p-6">
                 <button onclick="editProfile()" class="flex items-center space-x-3 mb-10 p-3 bg-white/[0.01] border border-white/5 rounded-xl w-full hover:bg-white/[0.04] transition-all text-left">
-                    <img id="u-img" class="w-8 h-8 rounded-full border border-cyan-500/20 object-cover" src="" alt="">
-                    <span id="u-name" class="text-[10px] font-black truncate uppercase tracking-tight">---</span>
+                    <img id="u-img" class="w-8 h-8 rounded-full border border-cyan-500/20 object-cover shadow-md" src="" alt="">
+                    <span id="u-name" class="text-[10px] font-black truncate uppercase tracking-widest">---</span>
                 </button>
-                <h2 class="text-[9px] font-black text-gray-700 uppercase tracking-widest mb-4 ml-2">Groups</h2>
+                <h2 class="text-[9px] font-black text-gray-700 uppercase tracking-widest mb-4 ml-2">Active Groups</h2>
                 <div id="group-list" class="space-y-1 overflow-y-auto max-h-[60vh] stream-box"></div>
             </div>
             <div class="mt-auto p-6 text-center">
                 <button onclick="createGroup()" class="w-full py-4 bg-cyan-600/10 border border-cyan-500/20 text-cyan-500 font-black text-[10px] uppercase tracking-widest rounded-xl hover:bg-cyan-600 hover:text-white transition-all">
                     Create Group
                 </button>
-                <div class="mt-6 text-[8px] text-gray-700 font-bold uppercase tracking-widest">Alpha 26.3.28c</div>
+                <div class="mt-6 text-[8px] text-gray-700 font-bold uppercase tracking-widest">Alpha 26.3.28d</div>
             </div>
         </aside>
 
@@ -329,7 +384,7 @@
             <div id="chat-stream" class="flex-1 overflow-y-auto p-8 stream-box"></div>
             <footer class="p-6 border-t border-white/5 glass">
                 <div class="max-w-4xl mx-auto flex items-center space-x-3">
-                    <input type="text" id="msg-in" class="flex-1 bg-black/40 border border-white/5 rounded-xl p-4 outline-none focus:border-cyan-500/20 transition-all text-sm" placeholder="Broadcast...">
+                    <input type="text" id="msg-in" class="flex-1 bg-black/40 border border-white/5 rounded-xl p-4 outline-none focus:border-cyan-500/20 transition-all text-sm" placeholder="Type here...">
                     <button id="mic-btn" onclick="toggleMic()" class="w-12 h-12 bg-white/[0.02] border border-white/5 rounded-xl flex items-center justify-center hover:bg-white/[0.04] transition-all text-lg shadow-inner">🎤</button>
                     <button onclick="pushMsg()" class="px-8 h-12 bg-cyan-600 text-white font-black text-[10px] uppercase tracking-widest rounded-xl transition-all hover:bg-cyan-500 shadow-lg">Send</button>
                 </div>
