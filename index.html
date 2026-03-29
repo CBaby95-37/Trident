@@ -8,8 +8,11 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
     
     <script type="module">
+        // =========================================================================================
+        // TRIDENT ALPHA ENGINE v26.3.28b (UNABRIDGED)
+        // =========================================================================================
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-        import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+        import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
         import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
         const CONFIG = {
@@ -41,10 +44,11 @@
                     chunks: [],
                     pfpBase64: ""
                 };
-                this.initAuth();
+                this.initAuthObserver();
             }
 
-            initAuth() {
+            // --- AUTH SUBSYSTEM ---
+            initAuthObserver() {
                 onAuthStateChanged(this.auth, async (user) => {
                     if (user) {
                         this.state.rawUser = user;
@@ -57,16 +61,25 @@
                                 this.showProfileSetup(true);
                             }
                         } catch (e) {
-                            console.error("Firestore Error:", e);
+                            console.error("Critical Firestore Error", e);
                             this.showProfileSetup(true);
                         }
                     } else {
-                        // Show login if not authenticated
                         document.getElementById('login-gate').style.display = 'flex';
                     }
                 });
             }
 
+            async triggerLogin() {
+                try {
+                    await signInWithPopup(this.auth, this.provider);
+                } catch (err) {
+                    console.error("Google Auth Failed", err);
+                    alert("Authentication Failed. Check browser pop-up blockers.");
+                }
+            }
+
+            // --- PROFILE MANAGEMENT ---
             showProfileSetup(isFirstTime) {
                 document.getElementById('login-gate').style.display = 'none';
                 document.getElementById('app-main').style.display = 'none';
@@ -78,9 +91,9 @@
                 }
             }
 
-            async saveProfile() {
+            async commitProfile() {
                 const username = document.getElementById('setup-username').value.trim();
-                if (!username || !this.state.pfpBase64) return alert("Username and Profile Picture are required.");
+                if (!username || !this.state.pfpBase64) return alert("All profile fields required.");
 
                 const profile = {
                     username: username.toUpperCase(),
@@ -94,13 +107,14 @@
                     document.getElementById('profile-gate').style.display = 'none';
                     this.launchUI();
                 } catch (e) {
-                    alert("Error saving profile. Make sure Firestore is enabled in Firebase Console.");
+                    alert("Firestore Access Denied. Verify Test Mode is enabled.");
                 }
             }
 
-            async send(text, blob = null) {
+            // --- NETWORK DISPATCHER ---
+            async transmit(payload, blob = null) {
                 if (!this.state.currentRoom) return;
-                const meta = `${this.state.sessionID}<|>${this.state.user.username}<|>${text}<|>${this.state.user.pfp}`;
+                const meta = `${this.state.sessionID}<|>${this.state.user.username}<|>${payload}<|>${this.state.user.pfp}`;
                 const options = blob ? {
                     method: 'POST', body: blob,
                     headers: { 'X-Message': meta, 'X-Title': 'TRIDENT_VOICE' }
@@ -108,7 +122,7 @@
                 await fetch(`https://ntfy.sh/${this.state.currentRoom}`, options);
             }
 
-            join(roomID) {
+            joinRoom(roomID) {
                 if (this.state.roomSSE) this.state.roomSSE.close();
                 this.state.currentRoom = roomID;
                 this.state.processedPackets.clear();
@@ -121,14 +135,15 @@
                     this.state.processedPackets.add(data.id);
                     const parts = data.message.split('<|>');
                     if (parts.length >= 3) {
-                        this.renderMessage(parts[0], parts[1], parts[2], parts[3], data.attachment);
+                        this.renderPacket(parts[0], parts[1], parts[2], parts[3], data.attachment);
                     }
                 };
                 document.getElementById('header-title').innerText = roomID;
-                this.send("connected.");
+                this.transmit("connected.");
             }
 
-            initLobby() {
+            // --- LOBBY DISCOVERY ---
+            initLobbyStream() {
                 if (this.state.lobbySSE) this.state.lobbySSE.close();
                 this.state.lobbySSE = new EventSource(`https://ntfy.sh/TRIDENT_LOBBY_V5/sse`);
                 this.state.lobbySSE.onmessage = (e) => {
@@ -136,7 +151,7 @@
                     const parts = p.message.split('|');
                     if (parts[0] === "HB") {
                         this.state.activeGroups.set(parts[1], { id: parts[1], user: parts[2], ts: Date.now() });
-                        this.renderSidebar();
+                        this.refreshSidebar();
                     }
                 };
                 setInterval(() => {
@@ -145,11 +160,12 @@
                             method: 'POST', body: `HB|${this.state.currentRoom}|${this.state.user.username}`
                         });
                     }
-                    this.cleanupGroups();
+                    this.purgeOldGroups();
                 }, 10000);
             }
 
-            renderMessage(sid, user, msg, pfp, attach) {
+            // --- UI RENDERERS ---
+            renderPacket(sid, user, msg, pfp, attach) {
                 const isSelf = sid === this.state.sessionID;
                 const box = document.getElementById('chat-stream');
                 const div = document.createElement('div');
@@ -171,22 +187,22 @@
                 if (attach && !isSelf) new Audio(attach.url).play();
             }
 
-            renderSidebar() {
+            refreshSidebar() {
                 const list = document.getElementById('group-list');
                 list.innerHTML = '';
                 this.state.activeGroups.forEach(g => {
                     const btn = document.createElement('button');
                     btn.className = "w-full text-left p-4 mb-2 rounded-xl bg-white/5 border border-white/5 hover:border-cyan-500/40 transition-all";
                     btn.innerHTML = `<div class="text-xs font-bold text-white">${g.user}'s Group</div><div class="text-[9px] text-gray-600 font-mono uppercase">${g.id}</div>`;
-                    btn.onclick = () => this.join(g.id);
+                    btn.onclick = () => this.joinRoom(g.id);
                     list.appendChild(btn);
                 });
             }
 
-            cleanupGroups() {
+            purgeOldGroups() {
                 const now = Date.now();
                 this.state.activeGroups.forEach((v, k) => { if (now - v.ts > 30000) this.state.activeGroups.delete(k); });
-                this.renderSidebar();
+                this.refreshSidebar();
             }
 
             launchUI() {
@@ -194,46 +210,47 @@
                 document.getElementById('app-main').style.display = 'flex';
                 document.getElementById('u-name').innerText = this.state.user.username;
                 document.getElementById('u-img').src = this.state.user.pfp;
-                this.initLobby();
+                this.initLobbyStream();
             }
         }
 
-        window.App = new TridentApp();
-        window.doLogin = () => window.App.login();
-        window.saveProfile = () => window.App.saveProfile();
-        window.editProfile = () => window.App.showProfileSetup(false);
-        window.createRoom = () => window.App.join("TRIDENT_" + Math.random().toString(36).substring(2, 8).toUpperCase());
+        // --- GLOBAL BINDINGS ---
+        window.TridentInstance = new TridentApp();
+        window.doLogin = () => window.TridentInstance.triggerLogin();
+        window.saveProfile = () => window.TridentInstance.commitProfile();
+        window.editProfile = () => window.TridentInstance.showProfileSetup(false);
+        window.createRoom = () => window.TridentInstance.joinRoom("TRIDENT_" + Math.random().toString(36).substring(2, 8).toUpperCase());
         window.sendMsg = () => {
             const i = document.getElementById('msg-in');
             if (!i.value) return;
-            window.App.send(i.value);
+            window.TridentInstance.transmit(i.value);
             i.value = '';
         };
         window.handleFile = (e) => {
             const reader = new FileReader();
             reader.onload = () => {
-                window.App.state.pfpBase64 = reader.result;
+                window.TridentInstance.state.pfpBase64 = reader.result;
                 document.getElementById('setup-preview').src = reader.result;
             };
             reader.readAsDataURL(e.target.files[0]);
         };
         window.toggleMic = async () => {
             const b = document.getElementById('mic-btn');
-            if (!window.App.state.recorder) {
+            if (!window.TridentInstance.state.recorder) {
                 const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-                window.App.state.recorder = new MediaRecorder(s);
-                window.App.state.recorder.ondataavailable = e => window.App.state.chunks.push(e.data);
-                window.App.state.recorder.onstop = () => {
-                    const blob = new Blob(window.App.state.chunks, { type: 'audio/wav' });
-                    window.App.send("🎤 Voice Note", blob);
-                    window.App.state.chunks = [];
+                window.TridentInstance.state.recorder = new MediaRecorder(s);
+                window.TridentInstance.state.recorder.ondataavailable = e => window.TridentInstance.state.chunks.push(e.data);
+                window.TridentInstance.state.recorder.onstop = () => {
+                    const blob = new Blob(window.TridentInstance.state.chunks, { type: 'audio/wav' });
+                    window.TridentInstance.transmit("🎤 Voice Note", blob);
+                    window.TridentInstance.state.chunks = [];
                 };
             }
-            if (window.App.state.recorder.state === "inactive") {
-                window.App.state.recorder.start();
+            if (window.TridentInstance.state.recorder.state === "inactive") {
+                window.TridentInstance.state.recorder.start();
                 b.classList.add('rec-active');
             } else {
-                window.App.state.recorder.stop();
+                window.TridentInstance.state.recorder.stop();
                 b.classList.remove('rec-active');
             }
         };
@@ -241,7 +258,7 @@
     </script>
 
     <style>
-        body { background-color: #030303; color: #fff; }
+        body { background-color: #030303; color: #fff; font-family: 'Segoe UI', system-ui, sans-serif; }
         .glass { background: rgba(8, 8, 8, 0.8); backdrop-filter: blur(25px); border: 1px solid rgba(255,255,255,0.02); }
         .stream-box::-webkit-scrollbar { width: 2px; }
         .stream-box::-webkit-scrollbar-thumb { background: #222; }
@@ -251,21 +268,21 @@
 </head>
 <body class="h-screen overflow-hidden flex flex-col">
 
-    <!-- LOGIN SCREEN (Visible by default to prevent black screen) -->
-    <div id="login-gate" class="fixed inset-0 z-[100] flex items-center justify-center bg-[#030303]">
+    <!-- LOGIN SCREEN -->
+    <div id="login-gate" class="fixed inset-0 z-[100] flex items-center justify-center bg-[#030303]" style="display:none">
         <div class="w-full max-w-xs p-12 glass rounded-[3rem] text-center border border-white/5 shadow-2xl">
             <svg class="w-16 h-16 text-cyan-500 mx-auto mb-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
             </svg>
             <h1 class="text-5xl font-black italic tracking-tighter mb-2">TRIDENT</h1>
             <p class="text-[9px] text-gray-700 font-bold uppercase tracking-[0.4em] mb-12">Alpha 26.3.28b</p>
-            <button onclick="doLogin()" class="w-full bg-white text-black font-black py-4 rounded-xl transition-all hover:bg-gray-100 text-[10px] uppercase tracking-widest shadow-xl">
+            <button id="auth-btn" onclick="doLogin()" class="w-full bg-white text-black font-black py-4 rounded-xl transition-all hover:bg-gray-100 text-[10px] uppercase tracking-widest shadow-xl">
                 Login with Google
             </button>
         </div>
     </div>
 
-    <!-- PROFILE SETUP (Hidden) -->
+    <!-- PROFILE SETUP -->
     <div id="profile-gate" class="fixed inset-0 z-[110] hidden items-center justify-center bg-[#030303]">
         <div class="w-full max-w-sm p-10 glass rounded-[2rem] border border-white/5 shadow-2xl">
             <h2 class="text-xl font-bold mb-6 text-center">Setup Profile</h2>
@@ -279,11 +296,11 @@
         </div>
     </div>
 
-    <!-- MAIN APP (Hidden) -->
-    <div id="app-main" class="flex flex-1 h-full hidden">
+    <!-- MAIN APP -->
+    <div id="app-main" class="flex flex-1 h-full" style="display:none">
         <aside class="w-72 glass border-r border-white/5 flex flex-col">
             <div class="p-6">
-                <button onclick="editProfile()" class="flex items-center space-x-3 mb-10 p-3 bg-white/[0.01] border border-white/5 rounded-xl w-full hover:bg-white/[0.04] transition-all">
+                <button onclick="editProfile()" class="flex items-center space-x-3 mb-10 p-3 bg-white/[0.01] border border-white/5 rounded-xl w-full hover:bg-white/[0.04] transition-all text-left">
                     <img id="u-img" class="w-8 h-8 rounded-full border border-cyan-500/20 object-cover" src="" alt="">
                     <span id="u-name" class="text-[10px] font-black truncate uppercase tracking-tight">---</span>
                 </button>
