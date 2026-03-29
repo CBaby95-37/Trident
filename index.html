@@ -9,10 +9,10 @@
     
     <script type="module">
         // =========================================================================================
-        // TRIDENT ALPHA ENGINE v26.3.28b (UNABRIDGED)
+        // TRIDENT ALPHA ENGINE v26.3.28c (UNABRIDGED REINFORCED)
         // =========================================================================================
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-        import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+        import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
         import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
         const CONFIG = {
@@ -44,24 +44,18 @@
                     chunks: [],
                     pfpBase64: ""
                 };
-                this.initAuthObserver();
+                this.initAuth();
             }
 
-            // --- AUTH SUBSYSTEM ---
-            initAuthObserver() {
+            initAuth() {
                 onAuthStateChanged(this.auth, async (user) => {
                     if (user) {
                         this.state.rawUser = user;
-                        try {
-                            const userDoc = await getDoc(doc(this.db, "users", user.uid));
-                            if (userDoc.exists()) {
-                                this.state.user = userDoc.data();
-                                this.launchUI();
-                            } else {
-                                this.showProfileSetup(true);
-                            }
-                        } catch (e) {
-                            console.error("Critical Firestore Error", e);
+                        const userDoc = await getDoc(doc(this.db, "users", user.uid)).catch(() => null);
+                        if (userDoc && userDoc.exists()) {
+                            this.state.user = userDoc.data();
+                            this.launchUI();
+                        } else {
                             this.showProfileSetup(true);
                         }
                     } else {
@@ -70,33 +64,32 @@
                 });
             }
 
-            async triggerLogin() {
-                try {
-                    await signInWithPopup(this.auth, this.provider);
-                } catch (err) {
-                    console.error("Google Auth Failed", err);
-                    alert("Authentication Failed. Check browser pop-up blockers.");
-                }
+            async login() {
+                await signInWithPopup(this.auth, this.provider).catch(e => alert("Pop-up blocked."));
             }
 
-            // --- PROFILE MANAGEMENT ---
-            showProfileSetup(isFirstTime) {
+            showProfileSetup(isFirst) {
                 document.getElementById('login-gate').style.display = 'none';
                 document.getElementById('app-main').style.display = 'none';
                 document.getElementById('profile-gate').style.display = 'flex';
-                if (!isFirstTime && this.state.user) {
+                if (!isFirst && this.state.user) {
                     document.getElementById('setup-username').value = this.state.user.username;
-                    this.state.pfpBase64 = this.state.user.pfp;
                     document.getElementById('setup-preview').src = this.state.user.pfp;
+                    this.state.pfpBase64 = this.state.user.pfp;
                 }
             }
 
-            async commitProfile() {
-                const username = document.getElementById('setup-username').value.trim();
-                if (!username || !this.state.pfpBase64) return alert("All profile fields required.");
+            async saveProfile() {
+                const btn = document.getElementById('save-btn');
+                const user = document.getElementById('setup-username').value.trim();
+                
+                if (!user || !this.state.pfpBase64) return alert("Username and Image required.");
+                
+                btn.innerText = "UPLOADING...";
+                btn.disabled = true;
 
                 const profile = {
-                    username: username.toUpperCase(),
+                    username: user.toUpperCase(),
                     pfp: this.state.pfpBase64,
                     uid: this.state.rawUser.uid
                 };
@@ -107,51 +100,49 @@
                     document.getElementById('profile-gate').style.display = 'none';
                     this.launchUI();
                 } catch (e) {
-                    alert("Firestore Access Denied. Verify Test Mode is enabled.");
+                    alert("Firestore Error. Check Console.");
+                    btn.innerText = "SAVE AND ENTER";
+                    btn.disabled = false;
                 }
             }
 
-            // --- NETWORK DISPATCHER ---
-            async transmit(payload, blob = null) {
+            // --- High Speed Network Layer ---
+            async send(text, blob = null) {
                 if (!this.state.currentRoom) return;
-                const meta = `${this.state.sessionID}<|>${this.state.user.username}<|>${payload}<|>${this.state.user.pfp}`;
+                const meta = `${this.state.sessionID}<|>${this.state.user.username}<|>${text}<|>${this.state.user.pfp}`;
                 const options = blob ? {
                     method: 'POST', body: blob,
-                    headers: { 'X-Message': meta, 'X-Title': 'TRIDENT_VOICE' }
+                    headers: { 'X-Message': meta, 'X-Title': 'T_VOICE' }
                 } : { method: 'POST', body: meta };
-                await fetch(`https://ntfy.sh/${this.state.currentRoom}`, options);
+                fetch(`https://ntfy.sh/${this.state.currentRoom}`, options);
             }
 
-            joinRoom(roomID) {
+            join(room) {
                 if (this.state.roomSSE) this.state.roomSSE.close();
-                this.state.currentRoom = roomID;
+                this.state.currentRoom = room;
                 this.state.processedPackets.clear();
-                document.getElementById('chat-stream').innerHTML = `<div class="text-[9px] text-cyan-800 font-bold uppercase tracking-widest mb-6 text-center">Synced: ${roomID}</div>`;
+                document.getElementById('chat-stream').innerHTML = `<div class="text-[9px] text-cyan-900 font-bold uppercase tracking-widest p-4 text-center">Sync: ${room}</div>`;
                 
-                this.state.roomSSE = new EventSource(`https://ntfy.sh/${roomID}/sse`);
+                this.state.roomSSE = new EventSource(`https://ntfy.sh/${room}/sse`);
                 this.state.roomSSE.onmessage = (e) => {
                     const data = JSON.parse(e.data);
                     if (this.state.processedPackets.has(data.id)) return;
                     this.state.processedPackets.add(data.id);
-                    const parts = data.message.split('<|>');
-                    if (parts.length >= 3) {
-                        this.renderPacket(parts[0], parts[1], parts[2], parts[3], data.attachment);
-                    }
+                    const p = data.message.split('<|>');
+                    if (p.length >= 3) this.renderMsg(p[0], p[1], p[2], p[3], data.attachment);
                 };
-                document.getElementById('header-title').innerText = roomID;
-                this.transmit("connected.");
+                document.getElementById('header-title').innerText = room;
+                this.send("online.");
             }
 
-            // --- LOBBY DISCOVERY ---
-            initLobbyStream() {
-                if (this.state.lobbySSE) this.state.lobbySSE.close();
-                this.state.lobbySSE = new EventSource(`https://ntfy.sh/TRIDENT_LOBBY_V5/sse`);
-                this.state.lobbySSE.onmessage = (e) => {
-                    const p = JSON.parse(e.data);
-                    const parts = p.message.split('|');
-                    if (parts[0] === "HB") {
-                        this.state.activeGroups.set(parts[1], { id: parts[1], user: parts[2], ts: Date.now() });
-                        this.refreshSidebar();
+            initLobby() {
+                const lobby = new EventSource(`https://ntfy.sh/TRIDENT_LOBBY_V5/sse`);
+                lobby.onmessage = (e) => {
+                    const data = JSON.parse(e.data);
+                    const p = data.message.split('|');
+                    if (p[0] === "HB") {
+                        this.state.activeGroups.set(p[1], { id: p[1], user: p[2], ts: Date.now() });
+                        this.renderList();
                     }
                 };
                 setInterval(() => {
@@ -160,25 +151,23 @@
                             method: 'POST', body: `HB|${this.state.currentRoom}|${this.state.user.username}`
                         });
                     }
-                    this.purgeOldGroups();
-                }, 10000);
+                    this.cleanup();
+                }, 8000);
             }
 
-            // --- UI RENDERERS ---
-            renderPacket(sid, user, msg, pfp, attach) {
+            renderMsg(sid, user, msg, pfp, attach) {
                 const isSelf = sid === this.state.sessionID;
                 const box = document.getElementById('chat-stream');
                 const div = document.createElement('div');
                 div.className = `flex mb-5 animate__animated animate__fadeInUp animate__faster ${isSelf ? 'justify-end' : 'justify-start'}`;
-                
                 div.innerHTML = `
                     <div class="flex ${isSelf ? 'flex-row-reverse' : 'flex-row'} items-start">
-                        <img src="${pfp || ''}" class="w-8 h-8 rounded-full border border-white/10 object-cover ${isSelf ? 'ml-3' : 'mr-3'}">
+                        <img src="${pfp}" class="w-8 h-8 rounded-full border border-white/10 object-cover ${isSelf ? 'ml-3' : 'mr-3'}">
                         <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'}">
                             <span class="text-[9px] font-bold mb-1 ${isSelf ? 'text-cyan-500' : 'text-gray-600'} uppercase">${isSelf ? 'YOU' : user}</span>
                             <div class="max-w-md p-3 rounded-xl text-sm ${isSelf ? 'bg-cyan-600/10 border border-cyan-500/20 text-white' : 'bg-white/5 border border-white/5 text-gray-300'}">
                                 ${msg}
-                                ${attach ? `<div class="mt-2 text-cyan-400 text-[8px] font-bold">● Audio</div>` : ''}
+                                ${attach ? `<div class="mt-2 text-cyan-400 text-[8px] font-bold">● Audio Packet</div>` : ''}
                             </div>
                         </div>
                     </div>`;
@@ -187,22 +176,22 @@
                 if (attach && !isSelf) new Audio(attach.url).play();
             }
 
-            refreshSidebar() {
+            renderList() {
                 const list = document.getElementById('group-list');
                 list.innerHTML = '';
                 this.state.activeGroups.forEach(g => {
                     const btn = document.createElement('button');
                     btn.className = "w-full text-left p-4 mb-2 rounded-xl bg-white/5 border border-white/5 hover:border-cyan-500/40 transition-all";
-                    btn.innerHTML = `<div class="text-xs font-bold text-white">${g.user}'s Group</div><div class="text-[9px] text-gray-600 font-mono uppercase">${g.id}</div>`;
-                    btn.onclick = () => this.joinRoom(g.id);
+                    btn.innerHTML = `<div class="text-xs font-bold text-white">${g.user}'s Group</div><div class="text-[8px] text-gray-600 font-mono uppercase">${g.id}</div>`;
+                    btn.onclick = () => this.join(g.id);
                     list.appendChild(btn);
                 });
             }
 
-            purgeOldGroups() {
+            cleanup() {
                 const now = Date.now();
-                this.state.activeGroups.forEach((v, k) => { if (now - v.ts > 30000) this.state.activeGroups.delete(k); });
-                this.refreshSidebar();
+                this.state.activeGroups.forEach((v, k) => { if (now - v.ts > 25000) this.state.activeGroups.delete(k); });
+                this.renderList();
             }
 
             launchUI() {
@@ -210,93 +199,110 @@
                 document.getElementById('app-main').style.display = 'flex';
                 document.getElementById('u-name').innerText = this.state.user.username;
                 document.getElementById('u-img').src = this.state.user.pfp;
-                this.initLobbyStream();
+                this.initLobby();
             }
         }
 
-        // --- GLOBAL BINDINGS ---
-        window.TridentInstance = new TridentApp();
-        window.doLogin = () => window.TridentInstance.triggerLogin();
-        window.saveProfile = () => window.TridentInstance.commitProfile();
-        window.editProfile = () => window.TridentInstance.showProfileSetup(false);
-        window.createRoom = () => window.TridentInstance.joinRoom("TRIDENT_" + Math.random().toString(36).substring(2, 8).toUpperCase());
-        window.sendMsg = () => {
+        // --- Start Engine ---
+        window.Trident = new TridentApp();
+        window.doLogin = () => window.Trident.login();
+        window.saveProfile = () => window.Trident.saveProfile();
+        window.editProfile = () => window.Trident.showProfileSetup(false);
+        window.createGroup = () => window.Trident.join("T_" + Math.random().toString(36).substring(2, 8).toUpperCase());
+        window.pushMsg = () => {
             const i = document.getElementById('msg-in');
             if (!i.value) return;
-            window.TridentInstance.transmit(i.value);
+            window.Trident.send(i.value);
             i.value = '';
         };
-        window.handleFile = (e) => {
+
+        // --- Fast Image Compressor (Fixes Lag) ---
+        window.processFile = (e) => {
+            const file = e.target.files[0];
             const reader = new FileReader();
-            reader.onload = () => {
-                window.TridentInstance.state.pfpBase64 = reader.result;
-                document.getElementById('setup-preview').src = reader.result;
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    const MAX_SIZE = 120; // Fast thumbnail size
+                    let w = img.width; let h = img.height;
+                    if (w > h) { if (w > MAX_SIZE) { h *= MAX_SIZE / w; w = MAX_SIZE; } }
+                    else { if (h > MAX_SIZE) { w *= MAX_SIZE / h; h = MAX_SIZE; } }
+                    canvas.width = w; canvas.height = h;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, w, h);
+                    const compressed = canvas.toDataURL('image/jpeg', 0.7);
+                    window.Trident.state.pfpBase64 = compressed;
+                    document.getElementById('setup-preview').src = compressed;
+                };
+                img.src = event.target.result;
             };
-            reader.readAsDataURL(e.target.files[0]);
+            reader.readAsDataURL(file);
         };
+
         window.toggleMic = async () => {
             const b = document.getElementById('mic-btn');
-            if (!window.TridentInstance.state.recorder) {
+            if (!window.Trident.state.recorder) {
                 const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-                window.TridentInstance.state.recorder = new MediaRecorder(s);
-                window.TridentInstance.state.recorder.ondataavailable = e => window.TridentInstance.state.chunks.push(e.data);
-                window.TridentInstance.state.recorder.onstop = () => {
-                    const blob = new Blob(window.TridentInstance.state.chunks, { type: 'audio/wav' });
-                    window.TridentInstance.transmit("🎤 Voice Note", blob);
-                    window.TridentInstance.state.chunks = [];
+                window.Trident.state.recorder = new MediaRecorder(s);
+                window.Trident.state.recorder.ondataavailable = e => window.Trident.state.chunks.push(e.data);
+                window.Trident.state.recorder.onstop = () => {
+                    const blob = new Blob(window.Trident.state.chunks, { type: 'audio/wav' });
+                    window.Trident.send("🎤 Voice Note", blob);
+                    window.Trident.state.chunks = [];
                 };
             }
-            if (window.TridentInstance.state.recorder.state === "inactive") {
-                window.TridentInstance.state.recorder.start();
+            if (window.Trident.state.recorder.state === "inactive") {
+                window.Trident.state.recorder.start();
                 b.classList.add('rec-active');
             } else {
-                window.TridentInstance.state.recorder.stop();
+                window.Trident.state.recorder.stop();
                 b.classList.remove('rec-active');
             }
         };
-        document.addEventListener('keydown', (e) => { if(e.key === 'Enter') window.sendMsg(); });
+        document.addEventListener('keydown', (e) => { if(e.key === 'Enter') window.pushMsg(); });
     </script>
 
     <style>
-        body { background-color: #030303; color: #fff; font-family: 'Segoe UI', system-ui, sans-serif; }
-        .glass { background: rgba(8, 8, 8, 0.8); backdrop-filter: blur(25px); border: 1px solid rgba(255,255,255,0.02); }
+        body { background-color: #030303; color: #fff; font-family: 'Segoe UI', sans-serif; }
+        .glass { background: rgba(8, 8, 8, 0.85); backdrop-filter: blur(30px); border: 1px solid rgba(255,255,255,0.03); }
         .stream-box::-webkit-scrollbar { width: 2px; }
-        .stream-box::-webkit-scrollbar-thumb { background: #222; }
+        .stream-box::-webkit-scrollbar-thumb { background: #333; }
         @keyframes pulse-red { 0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.3); } 70% { box-shadow: 0 0 0 12px rgba(220, 38, 38, 0); } 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); } }
         .rec-active { animation: pulse-red 1s infinite; background-color: #dc2626 !important; }
     </style>
 </head>
 <body class="h-screen overflow-hidden flex flex-col">
 
-    <!-- LOGIN SCREEN -->
+    <!-- GATE: LOGIN -->
     <div id="login-gate" class="fixed inset-0 z-[100] flex items-center justify-center bg-[#030303]" style="display:none">
-        <div class="w-full max-w-xs p-12 glass rounded-[3rem] text-center border border-white/5 shadow-2xl">
+        <div class="w-full max-w-xs p-12 glass rounded-[3rem] text-center border border-white/5">
             <svg class="w-16 h-16 text-cyan-500 mx-auto mb-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
             </svg>
             <h1 class="text-5xl font-black italic tracking-tighter mb-2">TRIDENT</h1>
-            <p class="text-[9px] text-gray-700 font-bold uppercase tracking-[0.4em] mb-12">Alpha 26.3.28b</p>
-            <button id="auth-btn" onclick="doLogin()" class="w-full bg-white text-black font-black py-4 rounded-xl transition-all hover:bg-gray-100 text-[10px] uppercase tracking-widest shadow-xl">
+            <p class="text-[9px] text-gray-700 font-bold uppercase tracking-[0.4em] mb-12">Alpha 26.3.28c</p>
+            <button onclick="doLogin()" class="w-full bg-white text-black font-black py-4 rounded-xl transition-all hover:bg-gray-100 text-[10px] uppercase tracking-widest">
                 Login with Google
             </button>
         </div>
     </div>
 
-    <!-- PROFILE SETUP -->
+    <!-- GATE: PROFILE -->
     <div id="profile-gate" class="fixed inset-0 z-[110] hidden items-center justify-center bg-[#030303]">
-        <div class="w-full max-w-sm p-10 glass rounded-[2rem] border border-white/5 shadow-2xl">
+        <div class="w-full max-w-sm p-10 glass rounded-[2.5rem] border border-white/5 shadow-2xl">
             <h2 class="text-xl font-bold mb-6 text-center">Setup Profile</h2>
             <div class="flex flex-col items-center mb-6">
-                <img id="setup-preview" class="w-24 h-24 rounded-full border-2 border-cyan-500 mb-4 object-cover bg-black" src="https://via.placeholder.com/150">
-                <input type="file" id="file-in" onchange="handleFile(event)" class="hidden" accept="image/*">
-                <button onclick="document.getElementById('file-in').click()" class="text-[10px] text-cyan-500 font-bold uppercase tracking-widest hover:text-cyan-400">Upload Image</button>
+                <img id="setup-preview" class="w-24 h-24 rounded-full border-2 border-cyan-500 mb-4 object-cover bg-black" src="https://via.placeholder.com/120">
+                <input type="file" id="file-in" onchange="processFile(event)" class="hidden" accept="image/*">
+                <button onclick="document.getElementById('file-in').click()" class="text-[10px] text-cyan-500 font-bold uppercase tracking-widest">Choose Image</button>
             </div>
-            <input type="text" id="setup-username" class="w-full bg-black/50 border border-white/10 p-4 rounded-xl mb-6 outline-none focus:border-cyan-500 transition-all text-sm" placeholder="Choose Username">
-            <button onclick="saveProfile()" class="w-full bg-cyan-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest shadow-lg hover:bg-cyan-500">Save and Enter</button>
+            <input type="text" id="setup-username" class="w-full bg-black/50 border border-white/10 p-4 rounded-xl mb-6 outline-none focus:border-cyan-500 transition-all text-sm" placeholder="Username">
+            <button id="save-btn" onclick="saveProfile()" class="w-full bg-cyan-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest shadow-lg">Save and Enter</button>
         </div>
     </div>
 
-    <!-- MAIN APP -->
+    <!-- APP -->
     <div id="app-main" class="flex flex-1 h-full" style="display:none">
         <aside class="w-72 glass border-r border-white/5 flex flex-col">
             <div class="p-6">
@@ -308,24 +314,24 @@
                 <div id="group-list" class="space-y-1 overflow-y-auto max-h-[60vh] stream-box"></div>
             </div>
             <div class="mt-auto p-6 text-center">
-                <button onclick="createRoom()" class="w-full py-4 bg-cyan-600/10 border border-cyan-500/20 text-cyan-500 font-black text-[10px] uppercase tracking-widest rounded-xl hover:bg-cyan-600 hover:text-white transition-all">
+                <button onclick="createGroup()" class="w-full py-4 bg-cyan-600/10 border border-cyan-500/20 text-cyan-500 font-black text-[10px] uppercase tracking-widest rounded-xl hover:bg-cyan-600 hover:text-white transition-all">
                     Create Group
                 </button>
-                <div class="mt-6 text-[8px] text-gray-800 font-bold uppercase tracking-widest">Alpha 26.3.28b</div>
+                <div class="mt-6 text-[8px] text-gray-700 font-bold uppercase tracking-widest">Alpha 26.3.28c</div>
             </div>
         </aside>
 
         <main class="flex-1 flex flex-col bg-[#010101]">
             <header class="p-6 border-b border-white/5 flex justify-between items-center bg-black/40">
-                <h3 id="header-title" class="text-xl font-light tracking-tighter text-gray-400 uppercase italic">Idle</h3>
+                <h3 id="header-title" class="text-xl font-light tracking-tighter text-gray-400 uppercase italic">Standby</h3>
                 <div class="w-2 h-2 bg-green-500 rounded-full shadow-[0_0_6px_#22c55e]"></div>
             </header>
             <div id="chat-stream" class="flex-1 overflow-y-auto p-8 stream-box"></div>
             <footer class="p-6 border-t border-white/5 glass">
                 <div class="max-w-4xl mx-auto flex items-center space-x-3">
-                    <input type="text" id="msg-in" class="flex-1 bg-black/40 border border-white/5 rounded-xl p-4 outline-none focus:border-cyan-500/20 transition-all text-sm" placeholder="Type here...">
+                    <input type="text" id="msg-in" class="flex-1 bg-black/40 border border-white/5 rounded-xl p-4 outline-none focus:border-cyan-500/20 transition-all text-sm" placeholder="Broadcast...">
                     <button id="mic-btn" onclick="toggleMic()" class="w-12 h-12 bg-white/[0.02] border border-white/5 rounded-xl flex items-center justify-center hover:bg-white/[0.04] transition-all text-lg shadow-inner">🎤</button>
-                    <button onclick="sendMsg()" class="px-8 h-12 bg-cyan-600 text-white font-black text-[10px] uppercase tracking-widest rounded-xl transition-all hover:bg-cyan-500">Send</button>
+                    <button onclick="pushMsg()" class="px-8 h-12 bg-cyan-600 text-white font-black text-[10px] uppercase tracking-widest rounded-xl transition-all hover:bg-cyan-500 shadow-lg">Send</button>
                 </div>
             </footer>
         </main>
