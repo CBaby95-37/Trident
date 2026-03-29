@@ -5,111 +5,146 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Trident | Professional Pipeline</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- FIREBASE & AUTH ENGINE -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+
+        // YOUR VERIFIED CONFIGURATION
+        const firebaseConfig = {
+            apiKey: "AIzaSyDcry0cEa5eqXiE_QgX2satkrt1mKsnFXQ",
+            authDomain: "trident-56ae7.firebaseapp.com",
+            projectId: "trident-56ae7",
+            storageBucket: "trident-56ae7.firebasestorage.app",
+            messagingSenderId: "788219973143",
+            appId: "1:788219973143:web:299bfa34e72fa991c69652",
+            measurementId: "G-NQMJBHWW9X"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const provider = new GoogleAuthProvider();
+
+        // Global Login Function
+        window.tridentLogin = () => {
+            signInWithPopup(auth, provider).catch(err => console.error("Auth Error:", err));
+        };
+
+        // Global Logout Function
+        window.tridentLogout = () => {
+            signOut(auth).then(() => location.reload());
+        };
+
+        // Auth Observer
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                state.username = user.displayName.split(' ')[0].toUpperCase();
+                state.photoURL = user.photoURL;
+                initializeTridentInterface();
+            }
+        });
+    </script>
+
     <style>
-        body { background-color: #050505; color: #e5e5e5; font-family: 'Segoe UI', system-ui, sans-serif; }
-        .glass { background: rgba(10, 10, 10, 0.8); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.03); }
-        .chat-box::-webkit-scrollbar { width: 5px; }
-        .chat-box::-webkit-scrollbar-thumb { background: #1a1a1a; border-radius: 10px; }
-        .console-font { font-family: 'Consolas', 'Courier New', monospace; }
-        @keyframes pulse-cyan { 0% { box-shadow: 0 0 0 0 rgba(6, 182, 212, 0.6); } 70% { box-shadow: 0 0 0 12px rgba(6, 182, 212, 0); } 100% { box-shadow: 0 0 0 0 rgba(6, 182, 212, 0); } }
-        .recording { animation: pulse-cyan 1.5s infinite; background-color: #0891b2 !important; border-color: #22d3ee !important; }
+        body { background-color: #030303; color: #e5e5e5; font-family: 'Segoe UI', system-ui, sans-serif; }
+        .glass { background: rgba(10, 10, 10, 0.85); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.03); }
         .trident-gradient { background: linear-gradient(135deg, #007ACC 0%, #00d4ff 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .chat-box::-webkit-scrollbar { width: 4px; }
+        .chat-box::-webkit-scrollbar-thumb { background: #1a1a1a; border-radius: 10px; }
+        @keyframes pulse-cyan { 0% { box-shadow: 0 0 0 0 rgba(6, 182, 212, 0.4); } 70% { box-shadow: 0 0 0 15px rgba(6, 182, 212, 0); } 100% { box-shadow: 0 0 0 0 rgba(6, 182, 212, 0); } }
+        .recording { animation: pulse-cyan 1.5s infinite; background-color: #dc2626 !important; }
     </style>
 </head>
 <body class="h-screen overflow-hidden flex flex-col">
 
-    <!-- TRIDENT LOGIN OVERLAY -->
+    <!-- AUTH OVERLAY -->
     <div id="login-overlay" class="fixed inset-0 z-50 flex items-center justify-center bg-[#030303]">
-        <div class="w-full max-w-md p-10 glass rounded-3xl shadow-2xl border border-white/5 text-center">
-            <h1 class="text-5xl font-black trident-gradient tracking-tighter mb-2 italic">TRIDENT</h1>
-            <p class="text-[10px] text-gray-500 font-black tracking-[0.3em] mb-10 uppercase">Advanced Communication Array</p>
-            
-            <div class="space-y-5 text-left">
-                <div>
-                    <label class="block text-[9px] font-bold text-gray-600 mb-2 uppercase tracking-widest ml-1">Operator Identity</label>
-                    <input type="text" id="username" class="w-full bg-[#0a0a0a] border border-[#1a1a1a] rounded-xl p-4 focus:border-cyan-500/50 outline-none transition-all text-white placeholder-gray-800" placeholder="Define handle...">
+        <div class="w-full max-w-sm p-12 glass rounded-[3rem] shadow-2xl text-center border border-white/5">
+            <div class="mb-6 flex justify-center">
+                <div class="w-20 h-20 bg-blue-600/10 rounded-full flex items-center justify-center border border-blue-500/20">
+                    <svg class="w-10 h-10 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
                 </div>
-                <div>
-                    <label class="block text-[9px] font-bold text-gray-600 mb-2 uppercase tracking-widest ml-1">Frequency Override (Optional)</label>
-                    <input type="text" id="room-input" class="w-full bg-[#0a0a0a] border border-[#1a1a1a] rounded-xl p-4 focus:border-cyan-500/50 outline-none transition-all text-white placeholder-gray-800" placeholder="Enter custom group ID...">
-                </div>
-                <button id="btn-connect" class="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-black py-5 rounded-xl transition-all shadow-xl shadow-cyan-900/20 mt-4 tracking-widest text-xs uppercase">Initialize Pipeline</button>
             </div>
-            <div class="mt-8 text-[9px] text-gray-700 font-bold uppercase tracking-widest">Secure Cloud Architecture v5.1</div>
+            <h1 class="text-5xl font-black trident-gradient tracking-tighter mb-2 italic">TRIDENT</h1>
+            <p class="text-[10px] text-gray-600 font-bold tracking-[0.5em] mb-12 uppercase">Private Communication Array</p>
+            
+            <button onclick="window.tridentLogin()" class="group w-full bg-white text-black font-black py-4 rounded-2xl transition-all flex items-center justify-center space-x-3 hover:bg-gray-200 active:scale-95 shadow-xl">
+                <img src="https://www.gstatic.com/images/branding/product/1x/gsa_512dp.png" class="w-6 h-6" alt="">
+                <span class="text-xs tracking-widest uppercase">Operator Sign-In</span>
+            </button>
+            
+            <p class="mt-10 text-[8px] text-gray-800 font-bold uppercase tracking-[0.2em]">Verified Firebase Security v12.11</p>
         </div>
     </div>
 
-    <!-- TRIDENT PRIMARY INTERFACE -->
+    <!-- MAIN APP -->
     <div id="main-app" class="flex flex-1 h-full hidden">
         
-        <!-- SIDEBAR: GROUP DISCOVERY -->
-        <aside class="w-80 glass flex flex-col border-r border-white/5">
+        <!-- SIDEBAR -->
+        <aside class="w-80 glass flex flex-col border-r border-white/5 bg-[#050505]">
             <div class="p-8">
-                <div class="flex items-center space-x-2 mb-8">
-                    <div class="w-2 h-2 bg-cyan-500 rounded-full animate-pulse"></div>
-                    <h2 class="text-white text-[10px] font-black uppercase tracking-[0.2em]">Active Frequencies</h2>
+                <!-- User Profile -->
+                <div class="flex items-center space-x-4 mb-10 p-4 bg-white/5 rounded-2xl border border-white/5">
+                    <img id="user-avatar" class="w-10 h-10 rounded-full border border-blue-500/30" src="" alt="">
+                    <div class="flex flex-col truncate">
+                        <span id="user-display-name" class="text-xs font-black text-white truncate uppercase">OPERATOR</span>
+                        <button onclick="window.tridentLogout()" class="text-[8px] text-gray-500 hover:text-red-500 font-bold uppercase tracking-widest text-left">Disconnect</button>
+                    </div>
                 </div>
-                <div id="group-list" class="space-y-3 overflow-y-auto max-h-[65vh] pr-2">
-                    <!-- Groups populate via Lobby Engine -->
-                </div>
+
+                <h2 class="text-gray-600 text-[9px] font-black uppercase tracking-[0.3em] mb-6 ml-2">Active Channels</h2>
+                <div id="group-list" class="space-y-2 overflow-y-auto max-h-[50vh]"></div>
             </div>
-            <div class="mt-auto p-8 border-t border-white/5 bg-black/20">
-                <button id="btn-create-group" class="w-full bg-white/5 hover:bg-white/10 text-cyan-400 border border-white/5 font-black py-4 rounded-xl transition-all text-[10px] uppercase tracking-widest">Construct New Group</button>
+            
+            <div class="mt-auto p-8 border-t border-white/5 bg-black/40">
+                <button id="btn-create-group" class="w-full bg-blue-600 text-white font-black py-4 rounded-xl transition-all text-[10px] uppercase tracking-widest shadow-lg shadow-blue-900/20 hover:bg-blue-500">INIT NEW FREQUENCY</button>
             </div>
         </aside>
 
-        <!-- MAIN VIEW: ENCRYPTED PIPELINE -->
-        <main class="flex-1 flex flex-col relative bg-[#030303]">
+        <!-- CHAT AREA -->
+        <main class="flex-1 flex flex-col bg-[#020202]">
             <header class="p-6 border-b border-white/5 flex justify-between items-center glass">
-                <div class="flex items-center space-x-6">
-                    <div class="flex flex-col">
-                        <span class="text-[9px] font-black text-cyan-600 uppercase tracking-widest">Active Connection</span>
-                        <h3 id="current-room-name" class="text-xl font-light text-gray-200 uppercase tracking-tighter">STANDBY</h3>
-                    </div>
+                <div class="flex flex-col">
+                    <span class="text-[9px] font-black text-blue-600 uppercase tracking-widest">Secured Link</span>
+                    <h3 id="current-room-name" class="text-xl font-light text-gray-300 tracking-tighter uppercase italic">Array Standby</h3>
                 </div>
-                <div id="status-text" class="text-[9px] font-black text-gray-600 tracking-widest uppercase px-4 py-2 border border-white/5 rounded-full">Pipeline: Offline</div>
+                <div id="status-text" class="text-[9px] font-black text-gray-700 tracking-widest uppercase px-4 py-2 border border-white/5 rounded-full">Node: Idle</div>
             </header>
 
-            <!-- CHAT DATA STREAM -->
-            <div id="chat-box" class="flex-1 overflow-y-auto p-10 space-y-6 console-font chat-box text-sm">
-                <div class="text-gray-800 italic uppercase text-[10px] tracking-widest border-b border-white/5 pb-4">Awaiting data packets from TRIDENT cloud...</div>
-            </div>
+            <div id="chat-box" class="flex-1 overflow-y-auto p-10 space-y-6 text-sm"></div>
 
-            <!-- TRANSMISSION ARRAY -->
             <footer class="p-10 border-t border-white/5 glass">
                 <div class="max-w-5xl mx-auto flex items-end space-x-4">
                     <div class="flex-1 flex flex-col space-y-2">
-                        <span class="text-[8px] font-black text-gray-600 uppercase tracking-[0.2em] ml-2">Message Input</span>
-                        <input type="text" id="chat-input" class="w-full bg-black border border-[#1a1a1a] rounded-2xl p-5 outline-none focus:border-cyan-500/30 transition-all text-white shadow-inner" placeholder="Broadcast to group...">
+                        <input type="text" id="chat-input" class="w-full bg-black border border-[#1a1a1a] rounded-2xl p-5 outline-none focus:border-blue-500/30 transition-all text-white placeholder-gray-800" placeholder="Enter broadcast packet...">
                     </div>
-                    <button id="btn-mic" class="w-16 h-16 bg-[#0a0a0a] border border-[#1a1a1a] rounded-2xl flex items-center justify-center hover:bg-[#111] transition-all text-2xl shadow-lg border-white/5">🎤</button>
-                    <button id="btn-send" class="px-10 h-16 bg-cyan-600 hover:bg-cyan-500 rounded-2xl text-white font-black transition-all shadow-xl shadow-cyan-900/30 tracking-widest text-xs uppercase">Send</button>
+                    <button id="btn-mic" class="w-16 h-16 bg-[#0a0a0a] border border-white/5 rounded-2xl flex items-center justify-center hover:bg-[#111] transition-all text-2xl shadow-lg">🎤</button>
+                    <button id="btn-send" class="px-10 h-16 bg-blue-600 hover:bg-blue-500 rounded-2xl text-white font-black transition-all text-xs uppercase tracking-widest shadow-xl">Transmit</button>
                 </div>
             </footer>
         </main>
     </div>
 
     <script>
-        // TRIDENT CORE SYSTEM CONFIG
-        const LOBBY_TOPIC = "TRIDENT_CORE_DISCOVERY";
+        const LOBBY_TOPIC = "TRIDENT_CORE_LOBBY_V5";
         let state = {
             username: "",
+            photoURL: "",
             sessionId: Math.random().toString(36).substring(2, 10),
             currentRoom: null,
-            isHosting: false,
             processedIds: new Set(),
             activeGroups: {},
             mediaRecorder: null,
             audioChunks: [],
-            sseInstance: null
+            sse: null
         };
 
         const ui = {
             overlay: document.getElementById('login-overlay'),
             main: document.getElementById('main-app'),
-            userIn: document.getElementById('username'),
-            roomIn: document.getElementById('room-input'),
-            btnConnect: document.getElementById('btn-connect'),
+            avatar: document.getElementById('user-avatar'),
+            displayName: document.getElementById('user-display-name'),
             groupList: document.getElementById('group-list'),
             chatBox: document.getElementById('chat-box'),
             chatInput: document.getElementById('chat-input'),
@@ -120,127 +155,90 @@
             btnCreate: document.getElementById('btn-create-group')
         };
 
-        // NETWORK DATA BROADCASTER
-        async function broadcast(topic, text, blob = null) {
-            if (!topic) return;
-            const url = `https://ntfy.sh/${topic}`;
-            const packet = `${state.sessionId}<|>${state.username}<|>${text}`;
-            
-            try {
-                if (blob) {
-                    await fetch(url, { 
-                        method: 'POST', 
-                        body: blob, 
-                        headers: { 'X-Message': packet, 'X-Title': 'TRIDENT_VOICE' } 
-                    });
-                } else {
-                    await fetch(url, { method: 'POST', body: packet });
-                }
-            } catch (e) { console.error("Transmission Failure", e); }
+        function initializeTridentInterface() {
+            ui.overlay.style.display = 'none';
+            ui.main.classList.remove('hidden');
+            ui.avatar.src = state.photoURL;
+            ui.displayName.innerText = state.username;
+            startLobbyDiscovery();
         }
 
-        // SSE STREAMING ENGINE
+        async function broadcast(topic, text, blob = null) {
+            if (!topic) return;
+            const meta = `${state.sessionId}<|>${state.username}<|>${text}`;
+            try {
+                if (blob) {
+                    await fetch(`https://ntfy.sh/${topic}`, { method: 'POST', body: blob, headers: { 'X-Message': meta, 'X-Title': 'TRIDENT_VOICE' } });
+                } else {
+                    await fetch(`https://ntfy.sh/${topic}`, { method: 'POST', body: meta });
+                }
+            } catch (e) {}
+        }
+
         function establishPipeline(topic) {
-            if (state.sseInstance) state.sseInstance.close();
-            
+            if (state.sse) state.sse.close();
+            state.currentRoom = topic;
             ui.roomTitle.innerText = topic;
-            ui.chatBox.innerHTML = `<div class="text-cyan-900 text-[10px] tracking-[0.3em] font-bold uppercase mb-4">Pipeline established on frequency: ${topic}</div>`;
+            ui.chatBox.innerHTML = `<div class="text-[10px] text-blue-900 font-bold uppercase tracking-[0.4em] mb-12 text-center">Synchronizing with Array Frequency...</div>`;
             state.processedIds.clear();
             
-            state.sseInstance = new EventSource(`https://ntfy.sh/${topic}/sse`);
-            state.sseInstance.onmessage = (e) => {
+            state.sse = new EventSource(`https://ntfy.sh/${topic}/sse`);
+            state.sse.onmessage = (e) => {
                 const data = JSON.parse(e.data);
                 if (state.processedIds.has(data.id)) return;
                 state.processedIds.add(data.id);
-
-                const parts = data.message.split('<|>');
-                if (parts.length === 3) {
-                    const [sid, user, msg] = parts;
-                    renderMessage(sid === state.sessionId ? "YOU" : user, msg, data.attachment);
+                const p = data.message.split('<|>');
+                if (p.length === 3) {
+                    renderUIMsg(p[0] === state.sessionId ? "YOU" : p[1], p[2], data.attachment);
                 }
             };
-            
-            broadcast(topic, "SYSTEM: Initialized connection to the array.");
-            ui.status.innerText = "Pipeline: Active Stream";
-            ui.status.classList.add('text-cyan-400');
+            broadcast(topic, "SYSTEM: NODE CONNECTED");
+            ui.status.innerText = "Node: Active Stream";
         }
 
-        // GLOBAL DISCOVERY SYSTEM
-        function initDiscovery() {
-            const lobbySource = new EventSource(`https://ntfy.sh/${LOBBY_TOPIC}/sse`);
-            lobbySource.onmessage = (e) => {
+        function startLobbyDiscovery() {
+            const sse = new EventSource(`https://ntfy.sh/${LOBBY_TOPIC}/sse`);
+            sse.onmessage = (e) => {
                 const data = JSON.parse(e.data);
-                const parts = data.message.split('|');
-                if (parts[0] === "TRIDENT_HB") {
-                    state.activeGroups[parts[1]] = { room: parts[1], user: parts[2], time: Date.now() };
+                const p = data.message.split('|');
+                if (p[0] === "HB") {
+                    state.activeGroups[p[1]] = { room: p[1], user: p[2], time: Date.now() };
                     renderSidebar();
                 }
             };
-
             setInterval(() => {
-                if (state.isHosting && state.currentRoom) {
-                    broadcast(LOBBY_TOPIC, `TRIDENT_HB|${state.currentRoom}|${state.username}`);
-                }
-                renderSidebar(); 
+                if (state.currentRoom) broadcast(LOBBY_TOPIC, `HB|${state.currentRoom}|${state.username}`);
+                renderSidebar();
             }, 8000);
         }
 
-        // UI RENDERERS
-        function renderMessage(user, text, attachment) {
+        function renderUIMsg(user, text, attach) {
             const div = document.createElement('div');
             const isSelf = user === "YOU";
-            const userColor = isSelf ? "text-cyan-400" : "text-gray-500";
-            const borderStyle = isSelf ? "border-l-2 border-cyan-900 pl-4" : "border-l border-white/5 pl-4";
-            
-            div.className = `flex flex-col space-y-1 ${borderStyle}`;
-            div.innerHTML = `
-                <span class="${userColor} text-[10px] font-black uppercase tracking-widest">${user}</span>
-                <span class="text-gray-300 font-light tracking-tight">${text}</span>
-            `;
+            div.className = `flex flex-col space-y-1 ${isSelf ? 'border-r-2 border-blue-600 pr-5 text-right' : 'border-l border-white/5 pl-5'}`;
+            div.innerHTML = `<span class="text-[9px] font-black uppercase tracking-[0.2em] ${isSelf ? 'text-blue-500' : 'text-gray-600'}">${user}</span><span class="text-gray-300 font-light tracking-tight">${text}</span>`;
             ui.chatBox.appendChild(div);
             ui.chatBox.scrollTop = ui.chatBox.scrollHeight;
-
-            if (attachment && !isSelf) {
-                const audio = new Audio(attachment.url);
-                audio.play();
-            }
+            if (attach && !isSelf) new Audio(attach.url).play();
         }
 
         function renderSidebar() {
             ui.groupList.innerHTML = '';
-            const now = Date.now();
             Object.values(state.activeGroups).forEach(g => {
-                if (now - g.time > 25000) return;
-                const btn = document.createElement('button');
-                btn.className = "w-full text-left p-5 bg-white/5 hover:bg-white/10 rounded-2xl transition-all border border-white/5 hover:border-cyan-500/20 group";
-                btn.innerHTML = `
-                    <div class="text-white font-bold text-xs uppercase tracking-tighter group-hover:text-cyan-400 transition-colors">${g.user}'s Group</div>
-                    <div class="text-[9px] text-gray-600 font-bold uppercase tracking-widest mt-1">ID: ${g.room}</div>
-                `;
-                btn.onclick = () => { state.currentRoom = g.room; establishPipeline(g.room); };
-                ui.groupList.appendChild(btn);
+                if (Date.now() - g.time > 25000) return;
+                const b = document.createElement('button');
+                b.className = "w-full text-left p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-blue-500/30 transition-all group";
+                b.innerHTML = `<div class="text-white font-black text-xs uppercase group-hover:text-blue-400 transition-colors">${g.user}</div><div class="text-[8px] text-gray-700 font-bold uppercase tracking-widest mt-1 italic">${g.room}</div>`;
+                b.onclick = () => establishPipeline(g.room);
+                ui.groupList.appendChild(b);
             });
         }
 
-        // BUTTON HANDLERS
-        ui.btnConnect.onclick = () => {
-            if (!ui.userIn.value) return;
-            state.username = ui.userIn.value.toUpperCase();
-            ui.overlay.style.display = 'none';
-            ui.main.classList.remove('hidden');
-            initDiscovery();
-            if (ui.roomIn.value) {
-                state.currentRoom = ui.roomIn.value.toUpperCase();
-                establishPipeline(state.currentRoom);
-            }
-        };
-
         ui.btnCreate.onclick = () => {
-            state.isHosting = true;
-            state.currentRoom = "TRIDENT_" + Math.random().toString(36).substring(2, 8).toUpperCase();
-            establishPipeline(state.currentRoom);
+            const rid = "T_" + Math.random().toString(36).substring(2, 8).toUpperCase();
+            establishPipeline(rid);
             ui.btnCreate.innerText = "FREQUENCY ACTIVE";
-            ui.btnCreate.classList.add('opacity-50');
+            ui.btnCreate.classList.add('opacity-30');
             ui.btnCreate.disabled = true;
         };
 
@@ -250,7 +248,6 @@
             ui.chatInput.value = '';
         };
 
-        // VOICE TRANSMISSION
         ui.btnMic.onclick = async () => {
             try {
                 if (!state.mediaRecorder) {
@@ -259,11 +256,10 @@
                     state.mediaRecorder.ondataavailable = e => state.audioChunks.push(e.data);
                     state.mediaRecorder.onstop = () => {
                         const blob = new Blob(state.audioChunks, { type: 'audio/wav' });
-                        broadcast(state.currentRoom, "🎤 (TRIDENT VOICE PACKET)", blob);
+                        broadcast(state.currentRoom, "🎤 (VOICE PACKET TRANSMITTED)", blob);
                         state.audioChunks = [];
                     };
                 }
-
                 if (state.mediaRecorder.state === "inactive") {
                     state.mediaRecorder.start();
                     ui.btnMic.classList.add('recording');
@@ -271,7 +267,7 @@
                     state.mediaRecorder.stop();
                     ui.btnMic.classList.remove('recording');
                 }
-            } catch (err) { alert("Microphone access denied or hardware not found."); }
+            } catch (err) { alert("Microphone array not detected."); }
         };
 
         window.onkeydown = (e) => { if(e.key === 'Enter') ui.btnSend.click(); };
