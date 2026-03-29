@@ -9,8 +9,9 @@
     
     <script type="module">
         // =========================================================================================
-        // TRIDENT ALPHA ENGINE v26.3.28g (UNABRIDGED WEBRTC + HISTORY EDITION)
-        // Features: Message History Sync, Live User Roster, Multi-Party Video Mesh
+        // TRIDENT ALPHA ENGINE v26.3.28h (UNABRIDGED RESTORATION)
+        // Restored missing rendering functions. All systems nominal.
+        // Features: History Sync, Live Roster, Global Groups, WebRTC Mesh, Firestore Caching
         // =========================================================================================
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
@@ -45,13 +46,11 @@
                     userCache: {},
                     pfpBase64: "",
                     
-                    // Live Roster State
-                    roomUsers: new Map(), // Tracks who is currently in the room
+                    roomUsers: new Map(), // Live Roster
                     
-                    // WebRTC State
                     inCall: false,
                     localStream: null,
-                    peers: new Map() // Tracks WebRTC connections per sessionID
+                    peers: new Map() // WebRTC Connections
                 };
                 
                 this.rtcConfig = {
@@ -73,7 +72,6 @@
                             const userDoc = await getDoc(doc(this.db, "users", user.uid)).catch(() => null);
                             if (userDoc && userDoc.exists()) {
                                 this.state.user = userDoc.data();
-                                // Pre-cache self
                                 this.state.userCache[this.state.rawUser.uid] = this.state.user.pfp;
                                 this.launchUI();
                             } else {
@@ -167,17 +165,16 @@
                         const historyText = await historyRes.text();
                         const lines = historyText.trim().split('\n');
                         
-                        // Parse history silently (don't play sounds for old messages)
                         for (const line of lines) {
                             if (!line) continue;
                             const data = JSON.parse(line);
                             if (data.event === "message" && !this.state.processedPackets.has(data.id)) {
                                 this.state.processedPackets.add(data.id);
-                                this.processIncomingData(data, true); // true = isHistory
+                                this.processIncomingData(data, true); 
                             }
                         }
                     }
-                } catch (e) { console.log("No history found or error fetching."); }
+                } catch (e) { console.log("History fetch ignored."); }
 
                 // 2. OPEN LIVE STREAM
                 const divider = document.createElement('div');
@@ -190,13 +187,11 @@
                     const data = JSON.parse(e.data);
                     if (this.state.processedPackets.has(data.id)) return;
                     this.state.processedPackets.add(data.id);
-                    this.processIncomingData(data, false); // false = not history, play sounds
+                    this.processIncomingData(data, false); 
                 };
                 
-                // Announce presence to build the roster
                 this.send("SYS_JOIN");
                 
-                // Start roster heartbeat (tells others we are still here)
                 if (this.rosterInterval) clearInterval(this.rosterInterval);
                 this.rosterInterval = setInterval(() => {
                     if (this.state.currentRoom) this.send("SYS_PING");
@@ -206,7 +201,7 @@
 
             processIncomingData(data, isHistory) {
                 const p = data.message.split('<|>');
-                if (p.length < 4) return; // Expecting: sessionID | username | text | uid
+                if (p.length < 4) return; 
 
                 const sid = p[0];
                 const username = p[1];
@@ -235,7 +230,6 @@
                 const list = document.getElementById('room-users-list');
                 list.innerHTML = '';
                 
-                // Add Self
                 list.innerHTML += `
                     <div class="flex items-center space-x-3 p-2 bg-white/5 rounded-xl border border-cyan-500/20">
                         <div class="relative">
@@ -245,11 +239,8 @@
                         <span class="text-[10px] font-black text-cyan-500 uppercase tracking-widest">YOU</span>
                     </div>`;
 
-                // Add Others
                 this.state.roomUsers.forEach((v, k) => {
                     if (k === this.state.sessionID) return;
-                    
-                    // Attempt to get PFP from cache
                     let pfp = this.state.userCache[v.uid] || "https://via.placeholder.com/120";
                     
                     list.innerHTML += `
@@ -261,7 +252,6 @@
                             <span class="text-[10px] font-bold text-gray-400 uppercase tracking-widest truncate">${v.name}</span>
                         </div>`;
                         
-                    // Async load PFP if not cached
                     if (!this.state.userCache[v.uid]) {
                         getDoc(doc(this.db, "users", v.uid)).then(docSnap => {
                             if (docSnap.exists()) {
@@ -273,7 +263,6 @@
                         }).catch(e => {});
                     }
                 });
-                
                 document.getElementById('roster-count').innerText = `${this.state.roomUsers.size} ONLINE`;
             }
 
@@ -309,10 +298,7 @@
                     document.getElementById('btn-call').classList.remove('bg-cyan-600', 'hover:bg-cyan-500');
                     document.getElementById('av-controls').classList.remove('hidden');
                     
-                    // Render Self Video
                     this.addVideoNode(this.state.sessionID, this.state.localStream, true, "YOU");
-                    
-                    // Tell everyone in the room we started a call
                     this.send("RTC|JOIN|");
                 } catch (e) {
                     alert("Camera/Microphone Access Denied.");
@@ -322,7 +308,6 @@
             leaveCall() {
                 this.state.inCall = false;
                 if (this.state.localStream) this.state.localStream.getTracks().forEach(t => t.stop());
-                
                 for (let [peerId, pc] of this.state.peers.entries()) { pc.close(); }
                 this.state.peers.clear();
                 
@@ -386,7 +371,6 @@
                 };
 
                 pc.ontrack = (e) => {
-                    // Try to get peer name from roster
                     let peerName = "OPERATOR";
                     if (this.state.roomUsers.has(peerId)) peerName = this.state.roomUsers.get(peerId).name;
                     this.addVideoNode(peerId, e.streams[0], false, peerName);
@@ -450,15 +434,36 @@
                     const p = data.message.split('|');
                     if (p[0] === "HB") {
                         this.state.activeGroups.set(p[1], { id: p[1], user: p[2], ts: Date.now() });
-                        this.renderList();
+                        this.renderSidebar();
                     }
                 };
                 setInterval(() => {
-                    if (this.state.currentRoom) fetch(`https://ntfy.sh/TRIDENT_LOBBY_V5`, { method: 'POST', body: `HB|${this.state.currentRoom}|${this.state.user.username}` });
+                    if (this.state.currentRoom) {
+                        fetch(`https://ntfy.sh/TRIDENT_LOBBY_V5`, { method: 'POST', body: `HB|${this.state.currentRoom}|${this.state.user.username}` });
+                    }
                     this.cleanupGroups();
                 }, 8000);
             }
 
+            renderSidebar() {
+                const list = document.getElementById('group-list');
+                list.innerHTML = '';
+                this.state.activeGroups.forEach(g => {
+                    const btn = document.createElement('button');
+                    btn.className = "w-full text-left p-4 mb-2 rounded-xl bg-white/5 border border-white/5 hover:border-cyan-500/40 transition-all";
+                    btn.innerHTML = `<div class="text-xs font-bold text-white">${g.user}'s Group</div><div class="text-[8px] text-gray-600 font-mono uppercase">${g.id}</div>`;
+                    btn.onclick = () => this.join(g.id);
+                    list.appendChild(btn);
+                });
+            }
+
+            cleanupGroups() {
+                const now = Date.now();
+                this.state.activeGroups.forEach((v, k) => { if (now - v.ts > 30000) this.state.activeGroups.delete(k); });
+                this.renderSidebar();
+            }
+
+            // --- MESSAGE UI RENDERING ---
             renderMsg(msgId, sid, user, msg, uid, isHistory) {
                 const isSelf = sid === this.state.sessionID;
                 const box = document.getElementById('chat-stream');
@@ -494,24 +499,6 @@
                         }).catch(e => {});
                     }
                 }
-            }
-
-            renderList() {
-                const list = document.getElementById('group-list');
-                list.innerHTML = '';
-                this.state.activeGroups.forEach(g => {
-                    const btn = document.createElement('button');
-                    btn.className = "w-full text-left p-4 mb-2 rounded-xl bg-white/5 border border-white/5 hover:border-cyan-500/40 transition-all";
-                    btn.innerHTML = `<div class="text-xs font-bold text-white">${g.user}'s Group</div><div class="text-[8px] text-gray-600 font-mono uppercase">${g.id}</div>`;
-                    btn.onclick = () => this.join(g.id);
-                    list.appendChild(btn);
-                });
-            }
-
-            cleanupGroups() {
-                const now = Date.now();
-                this.state.activeGroups.forEach((v, k) => { if (now - v.ts > 25000) this.state.activeGroups.delete(k); });
-                this.renderList();
             }
 
             launchUI() {
@@ -583,7 +570,7 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
             </svg>
             <h1 class="text-5xl font-black italic tracking-tighter mb-2">TRIDENT</h1>
-            <p class="text-[9px] text-gray-700 font-bold uppercase tracking-[0.4em] mb-12">Alpha 26.3.28g</p>
+            <p class="text-[9px] text-gray-700 font-bold uppercase tracking-[0.4em] mb-12">Alpha 26.3.28h</p>
             <button onclick="doLogin()" class="w-full bg-white text-black font-black py-4 rounded-xl transition-all hover:bg-gray-100 text-[10px] uppercase tracking-widest shadow-xl">
                 Login with Google
             </button>
@@ -636,7 +623,7 @@
                 <button onclick="createGroup()" class="w-full py-4 bg-cyan-600/10 border border-cyan-500/20 text-cyan-500 font-black text-[10px] uppercase tracking-widest rounded-xl hover:bg-cyan-600 hover:text-white transition-all">
                     Create Group
                 </button>
-                <div class="mt-6 text-[8px] text-gray-700 font-bold uppercase tracking-widest">Alpha 26.3.28g</div>
+                <div class="mt-6 text-[8px] text-gray-700 font-bold uppercase tracking-widest">Alpha 26.3.28h</div>
             </div>
         </aside>
 
