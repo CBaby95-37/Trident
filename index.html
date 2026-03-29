@@ -9,8 +9,8 @@
     
     <script type="module">
         // =========================================================================================
-        // TRIDENT ALPHA ENGINE v26.3.28d (UNABRIDGED REINFORCED)
-        // Fix: Explicit Firestore error handling and button state recovery
+        // TRIDENT ALPHA ENGINE v26.3.28e (UNABRIDGED REINFORCED)
+        // Fix: Firestore Image Caching to bypass 4KB Cloud Payload limits
         // =========================================================================================
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
@@ -41,6 +41,7 @@
                     roomSSE: null,
                     activeGroups: new Map(),
                     processedPackets: new Set(),
+                    userCache: {}, // NEW: Local Cache for Profile Pictures
                     recorder: null,
                     chunks: [],
                     pfpBase64: ""
@@ -62,7 +63,6 @@
                             }
                         } catch (error) {
                             console.error("Firestore Init Error:", error);
-                            // If we can't read from DB, force them to setup profile locally
                             this.showProfileSetup(true);
                         }
                     } else {
@@ -84,13 +84,11 @@
                 document.getElementById('app-main').style.display = 'none';
                 document.getElementById('profile-gate').style.display = 'flex';
                 
-                // If they already have a profile, populate the boxes
                 if (!isFirst && this.state.user) {
                     document.getElementById('setup-username').value = this.state.user.username;
                     document.getElementById('setup-preview').src = this.state.user.pfp;
                     this.state.pfpBase64 = this.state.user.pfp;
                 } else if (isFirst && this.state.rawUser) {
-                    // Pull default photo from Google if first time
                     document.getElementById('setup-preview').src = this.state.rawUser.photoURL || "https://via.placeholder.com/120";
                     this.state.pfpBase64 = this.state.rawUser.photoURL || "";
                 }
@@ -100,19 +98,11 @@
                 const btn = document.getElementById('save-btn');
                 const user = document.getElementById('setup-username').value.trim();
                 const errorTxt = document.getElementById('profile-error');
-                
-                errorTxt.innerText = ""; // Clear old errors
+                errorTxt.innerText = ""; 
 
-                if (!user) {
-                    errorTxt.innerText = "Username cannot be empty.";
-                    return;
-                }
-                if (!this.state.pfpBase64) {
-                    errorTxt.innerText = "Please select a profile image.";
-                    return;
-                }
+                if (!user) return errorTxt.innerText = "Username cannot be empty.";
+                if (!this.state.pfpBase64) return errorTxt.innerText = "Please select a profile image.";
                 
-                // Lock button to prevent double-clicks
                 btn.innerText = "UPLOADING...";
                 btn.disabled = true;
                 btn.classList.add("opacity-50");
@@ -124,24 +114,16 @@
                 };
 
                 try {
-                    // Attempt to write to Firestore
                     await setDoc(doc(this.db, "users", this.state.rawUser.uid), profileData);
-                    
-                    // Success
                     this.state.user = profileData;
                     document.getElementById('profile-gate').style.display = 'none';
-                    
-                    // Reset Button for next time
                     btn.innerText = "SAVE AND ENTER";
                     btn.disabled = false;
                     btn.classList.remove("opacity-50");
-                    
                     this.launchUI();
                 } catch (error) {
                     console.error("Firestore Save Error:", error);
                     errorTxt.innerText = "Database Error: Ensure Firestore rules are set to Allow Read/Write.";
-                    
-                    // Restore button so they can try again
                     btn.innerText = "SAVE AND ENTER";
                     btn.disabled = false;
                     btn.classList.remove("opacity-50");
@@ -151,12 +133,16 @@
             // --- HIGH-SPEED NETWORK LAYER ---
             async send(text, blob = null) {
                 if (!this.state.currentRoom) return;
-                const meta = `${this.state.sessionID}<|>${this.state.user.username}<|>${text}<|>${this.state.user.pfp}`;
+                
+                // NEW: We send the UID instead of the massive Base64 string to stay under the 4KB cloud limit
+                const meta = `${this.state.sessionID}<|>${this.state.user.username}<|>${text}<|>${this.state.rawUser.uid}`;
+                
                 const options = blob ? {
                     method: 'POST', body: blob,
                     headers: { 'X-Message': meta, 'X-Title': 'T_VOICE' }
                 } : { method: 'POST', body: meta };
-                fetch(`https://ntfy.sh/${this.state.currentRoom}`, options);
+                
+                fetch(`https://ntfy.sh/${this.state.currentRoom}`, options).catch(e => console.log("Send Err:", e));
             }
 
             join(room) {
@@ -170,13 +156,15 @@
                     const data = JSON.parse(e.data);
                     if (this.state.processedPackets.has(data.id)) return;
                     this.state.processedPackets.add(data.id);
+                    
                     const p = data.message.split('<|>');
                     if (p.length >= 3) {
-                        this.renderMsg(p[0], p[1], p[2], p[3] || "https://via.placeholder.com/40", data.attachment);
+                        // Pass msgID, sid, username, message, uid, attachment
+                        this.renderMsg(data.id, p[0], p[1], p[2], p[3], data.attachment);
                     }
                 };
                 document.getElementById('header-title').innerText = room;
-                this.send("online.");
+                this.send("connected.");
             }
 
             initLobby() {
@@ -200,14 +188,18 @@
                 }, 8000);
             }
 
-            renderMsg(sid, user, msg, pfp, attach) {
+            renderMsg(msgId, sid, user, msg, uid, attach) {
                 const isSelf = sid === this.state.sessionID;
                 const box = document.getElementById('chat-stream');
                 const div = document.createElement('div');
                 div.className = `flex mb-5 animate__animated animate__fadeInUp animate__faster ${isSelf ? 'justify-end' : 'justify-start'}`;
+                
+                // Default placeholder while loading
+                let initialPfp = isSelf ? this.state.user.pfp : "https://via.placeholder.com/120";
+
                 div.innerHTML = `
                     <div class="flex ${isSelf ? 'flex-row-reverse' : 'flex-row'} items-start">
-                        <img src="${pfp}" class="w-8 h-8 rounded-full border border-white/10 object-cover shadow-lg ${isSelf ? 'ml-3' : 'mr-3'}">
+                        <img id="pfp-${msgId}" src="${initialPfp}" class="w-8 h-8 rounded-full border border-white/10 object-cover shadow-lg ${isSelf ? 'ml-3' : 'mr-3'} bg-[#111]">
                         <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'}">
                             <span class="text-[9px] font-bold mb-1 ${isSelf ? 'text-cyan-500' : 'text-gray-600'} uppercase">${isSelf ? 'YOU' : user}</span>
                             <div class="max-w-md p-3 rounded-xl text-sm ${isSelf ? 'bg-cyan-600/10 border border-cyan-500/20 text-white' : 'bg-white/5 border border-white/5 text-gray-300'}">
@@ -218,6 +210,23 @@
                     </div>`;
                 box.appendChild(div);
                 box.scrollTop = box.scrollHeight;
+
+                // NEW: Async Database Fetching for Profile Pictures
+                if (!isSelf && uid) {
+                    if (this.state.userCache[uid]) {
+                        document.getElementById(`pfp-${msgId}`).src = this.state.userCache[uid];
+                    } else {
+                        getDoc(doc(this.db, "users", uid)).then(docSnap => {
+                            if (docSnap.exists()) {
+                                const loadedPfp = docSnap.data().pfp;
+                                this.state.userCache[uid] = loadedPfp;
+                                const imgEl = document.getElementById(`pfp-${msgId}`);
+                                if (imgEl) imgEl.src = loadedPfp;
+                            }
+                        }).catch(e => console.error("PFP Load Error", e));
+                    }
+                }
+
                 if (attach && !isSelf) new Audio(attach.url).play();
             }
 
@@ -335,7 +344,7 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
             </svg>
             <h1 class="text-5xl font-black italic tracking-tighter mb-2">TRIDENT</h1>
-            <p class="text-[9px] text-gray-700 font-bold uppercase tracking-[0.4em] mb-12">Alpha 26.3.28d</p>
+            <p class="text-[9px] text-gray-700 font-bold uppercase tracking-[0.4em] mb-12">Alpha 26.3.28e</p>
             <button onclick="doLogin()" class="w-full bg-white text-black font-black py-4 rounded-xl transition-all hover:bg-gray-100 text-[10px] uppercase tracking-widest shadow-xl">
                 Sign in with Google
             </button>
@@ -372,7 +381,7 @@
                 <button onclick="createGroup()" class="w-full py-4 bg-cyan-600/10 border border-cyan-500/20 text-cyan-500 font-black text-[10px] uppercase tracking-widest rounded-xl hover:bg-cyan-600 hover:text-white transition-all">
                     Create Group
                 </button>
-                <div class="mt-6 text-[8px] text-gray-700 font-bold uppercase tracking-widest">Alpha 26.3.28d</div>
+                <div class="mt-6 text-[8px] text-gray-700 font-bold uppercase tracking-widest">Alpha 26.3.28e</div>
             </div>
         </aside>
 
