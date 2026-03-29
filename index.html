@@ -3,16 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Trident | Professional Pipeline</title>
+    <title>Trident</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
     
-    <!-- FIREBASE & AUTH ENGINE -->
     <script type="module">
+        // =========================================================================================
+        // TRIDENT ALPHA ENGINE
+        // =========================================================================================
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
-        // YOUR VERIFIED CONFIGURATION
-        const firebaseConfig = {
+        const CONFIG = {
             apiKey: "AIzaSyDcry0cEa5eqXiE_QgX2satkrt1mKsnFXQ",
             authDomain: "trident-56ae7.firebaseapp.com",
             projectId: "trident-56ae7",
@@ -22,255 +24,243 @@
             measurementId: "G-NQMJBHWW9X"
         };
 
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const provider = new GoogleAuthProvider();
-
-        // Global Login Function
-        window.tridentLogin = () => {
-            signInWithPopup(auth, provider).catch(err => console.error("Auth Error:", err));
-        };
-
-        // Global Logout Function
-        window.tridentLogout = () => {
-            signOut(auth).then(() => location.reload());
-        };
-
-        // Auth Observer
-        onAuthStateChanged(auth, (user) => {
-            if (user) {
-                state.username = user.displayName.split(' ')[0].toUpperCase();
-                state.photoURL = user.photoURL;
-                initializeTridentInterface();
+        class TridentApp {
+            constructor() {
+                this.app = initializeApp(CONFIG);
+                this.auth = getAuth(this.app);
+                this.provider = new GoogleAuthProvider();
+                this.state = {
+                    user: null,
+                    sessionID: Math.random().toString(36).substring(2, 15),
+                    currentRoom: null,
+                    lobbySSE: null,
+                    roomSSE: null,
+                    activeGroups: new Map(),
+                    processedPackets: new Set(),
+                    recorder: null,
+                    chunks: []
+                };
+                this.initAuth();
             }
-        });
+
+            initAuth() {
+                onAuthStateChanged(this.auth, (user) => {
+                    if (user) {
+                        this.state.user = {
+                            name: user.displayName.split(' ')[0],
+                            fullName: user.displayName,
+                            photo: user.photoURL
+                        };
+                        this.launchUI();
+                    } else {
+                        document.getElementById('login-gate').style.display = 'flex';
+                    }
+                });
+            }
+
+            async login() {
+                await signInWithPopup(this.auth, this.provider).catch(console.error);
+            }
+
+            async send(text, blob = null) {
+                if (!this.state.currentRoom) return;
+                const meta = `${this.state.sessionID}<|>${this.state.user.name}<|>${text}`;
+                const options = blob ? {
+                    method: 'POST', body: blob,
+                    headers: { 'X-Message': meta, 'X-Title': 'TRIDENT_VOICE' }
+                } : { method: 'POST', body: meta };
+
+                await fetch(`https://ntfy.sh/${this.state.currentRoom}`, options);
+            }
+
+            join(roomID) {
+                if (this.state.roomSSE) this.state.roomSSE.close();
+                this.state.currentRoom = roomID;
+                this.state.processedPackets.clear();
+                
+                document.getElementById('chat-stream').innerHTML = `<div class="text-[10px] text-cyan-700 font-bold uppercase tracking-widest mb-6 text-center">Joined ${roomID}</div>`;
+                
+                this.state.roomSSE = new EventSource(`https://ntfy.sh/${roomID}/sse`);
+                this.state.roomSSE.onmessage = (e) => {
+                    const data = JSON.parse(e.data);
+                    if (this.state.processedPackets.has(data.id)) return;
+                    this.state.processedPackets.add(data.id);
+
+                    const parts = data.message.split('<|>');
+                    if (parts.length === 3) {
+                        this.renderMessage(parts[0], parts[1], parts[2], data.attachment);
+                    }
+                };
+                document.getElementById('header-title').innerText = roomID;
+                this.send("connected.");
+            }
+
+            initLobby() {
+                const lobby = new EventSource(`https://ntfy.sh/TRIDENT_LOBBY_V5/sse`);
+                lobby.onmessage = (e) => {
+                    const p = JSON.parse(e.data);
+                    const parts = p.message.split('|');
+                    if (parts[0] === "HB") {
+                        this.state.activeGroups.set(parts[1], { id: parts[1], user: parts[2], ts: Date.now() });
+                        this.renderSidebar();
+                    }
+                };
+                setInterval(() => {
+                    if (this.state.currentRoom) {
+                        fetch(`https://ntfy.sh/TRIDENT_LOBBY_V5`, {
+                            method: 'POST', body: `HB|${this.state.currentRoom}|${this.state.user.name}`
+                        });
+                    }
+                    this.cleanupGroups();
+                }, 10000);
+            }
+
+            renderMessage(sid, user, msg, attach) {
+                const isSelf = sid === this.state.sessionID;
+                const box = document.getElementById('chat-stream');
+                const div = document.createElement('div');
+                div.className = `flex flex-col mb-4 animate__animated animate__fadeInUp animate__faster ${isSelf ? 'items-end' : 'items-start'}`;
+                div.innerHTML = `
+                    <span class="text-[10px] font-bold mb-1 ${isSelf ? 'text-cyan-500' : 'text-gray-600'} uppercase">${isSelf ? 'YOU' : user}</span>
+                    <div class="max-w-[85%] p-3 rounded-xl text-sm ${isSelf ? 'bg-cyan-600/10 border border-cyan-500/20 text-white' : 'bg-white/5 border border-white/5 text-gray-300'}">
+                        ${msg}
+                        ${attach ? `<div class="mt-2 text-cyan-400 text-[9px] font-bold">● Voice Note</div>` : ''}
+                    </div>`;
+                box.appendChild(div);
+                box.scrollTop = box.scrollHeight;
+                if (attach && !isSelf) new Audio(attach.url).play();
+            }
+
+            renderSidebar() {
+                const list = document.getElementById('group-list');
+                list.innerHTML = '';
+                this.state.activeGroups.forEach(g => {
+                    const btn = document.createElement('button');
+                    btn.className = "w-full text-left p-4 mb-2 rounded-xl bg-white/5 border border-white/5 hover:border-cyan-500/40 transition-all";
+                    btn.innerHTML = `<div class="text-xs font-bold text-white">${g.user}'s Group</div><div class="text-[9px] text-gray-600 font-mono uppercase">${g.id}</div>`;
+                    btn.onclick = () => this.join(g.id);
+                    list.appendChild(btn);
+                });
+            }
+
+            cleanupGroups() {
+                const now = Date.now();
+                this.state.activeGroups.forEach((v, k) => { if (now - v.ts > 30000) this.state.activeGroups.delete(k); });
+                this.renderSidebar();
+            }
+
+            launchUI() {
+                document.getElementById('login-gate').style.display = 'none';
+                document.getElementById('app-main').style.display = 'flex';
+                document.getElementById('u-name').innerText = this.state.user.fullName;
+                document.getElementById('u-img').src = this.state.user.photo;
+                this.initLobby();
+            }
+        }
+
+        window.App = new TridentApp();
+        window.doLogin = () => window.App.login();
+        window.createRoom = () => window.App.join("TRIDENT_" + Math.random().toString(36).substring(2, 8).toUpperCase());
+        window.sendMsg = () => {
+            const i = document.getElementById('msg-in');
+            if (!i.value) return;
+            window.App.send(i.value);
+            i.value = '';
+        };
+        window.toggleMic = async () => {
+            const b = document.getElementById('mic-btn');
+            if (!window.App.state.recorder) {
+                const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+                window.App.state.recorder = new MediaRecorder(s);
+                window.App.state.recorder.ondataavailable = e => window.App.state.chunks.push(e.data);
+                window.App.state.recorder.onstop = () => {
+                    const blob = new Blob(window.App.state.chunks, { type: 'audio/wav' });
+                    window.App.send("🎤 Voice Note", blob);
+                    window.App.state.chunks = [];
+                };
+            }
+            if (window.App.state.recorder.state === "inactive") {
+                window.App.state.recorder.start();
+                b.classList.add('recording-ui');
+            } else {
+                window.App.state.recorder.stop();
+                b.classList.remove('recording-ui');
+            }
+        };
+        document.addEventListener('keydown', (e) => { if(e.key === 'Enter') window.sendMsg(); });
     </script>
 
     <style>
-        body { background-color: #030303; color: #e5e5e5; font-family: 'Segoe UI', system-ui, sans-serif; }
-        .glass { background: rgba(10, 10, 10, 0.85); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.03); }
-        .trident-gradient { background: linear-gradient(135deg, #007ACC 0%, #00d4ff 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .chat-box::-webkit-scrollbar { width: 4px; }
-        .chat-box::-webkit-scrollbar-thumb { background: #1a1a1a; border-radius: 10px; }
-        @keyframes pulse-cyan { 0% { box-shadow: 0 0 0 0 rgba(6, 182, 212, 0.4); } 70% { box-shadow: 0 0 0 15px rgba(6, 182, 212, 0); } 100% { box-shadow: 0 0 0 0 rgba(6, 182, 212, 0); } }
-        .recording { animation: pulse-cyan 1.5s infinite; background-color: #dc2626 !important; }
+        body { background-color: #050505; color: #fff; letter-spacing: -0.01em; }
+        .glass { background: rgba(10, 10, 10, 0.8); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.02); }
+        .stream-box::-webkit-scrollbar { width: 2px; }
+        .stream-box::-webkit-scrollbar-thumb { background: #222; }
+        @keyframes pulse-red { 0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.4); } 70% { box-shadow: 0 0 0 15px rgba(220, 38, 38, 0); } 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); } }
+        .recording-ui { animation: pulse-red 1s infinite; background-color: #dc2626 !important; }
+        .trident-logo { filter: drop-shadow(0 0 10px rgba(0, 122, 204, 0.5)); }
     </style>
 </head>
 <body class="h-screen overflow-hidden flex flex-col">
 
-    <!-- AUTH OVERLAY -->
-    <div id="login-overlay" class="fixed inset-0 z-50 flex items-center justify-center bg-[#030303]">
-        <div class="w-full max-w-sm p-12 glass rounded-[3rem] shadow-2xl text-center border border-white/5">
-            <div class="mb-6 flex justify-center">
-                <div class="w-20 h-20 bg-blue-600/10 rounded-full flex items-center justify-center border border-blue-500/20">
-                    <svg class="w-10 h-10 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                </div>
-            </div>
-            <h1 class="text-5xl font-black trident-gradient tracking-tighter mb-2 italic">TRIDENT</h1>
-            <p class="text-[10px] text-gray-600 font-bold tracking-[0.5em] mb-12 uppercase">Private Communication Array</p>
+    <!-- LOGIN -->
+    <div id="login-gate" class="fixed inset-0 z-[100] flex items-center justify-center bg-[#050505]">
+        <div class="w-full max-w-xs p-10 glass rounded-[2.5rem] text-center border border-white/5">
+            <svg class="w-16 h-16 text-cyan-500 mx-auto mb-6 trident-logo" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            </svg>
+            <h1 class="text-4xl font-black italic tracking-tighter mb-1">TRIDENT</h1>
+            <p class="text-[10px] text-gray-600 font-bold uppercase tracking-widest mb-10">Alpha 25.1.30a</p>
             
-            <button onclick="window.tridentLogin()" class="group w-full bg-white text-black font-black py-4 rounded-2xl transition-all flex items-center justify-center space-x-3 hover:bg-gray-200 active:scale-95 shadow-xl">
-                <img src="https://www.gstatic.com/images/branding/product/1x/gsa_512dp.png" class="w-6 h-6" alt="">
-                <span class="text-xs tracking-widest uppercase">Operator Sign-In</span>
+            <button onclick="doLogin()" class="w-full bg-white text-black font-black py-4 rounded-xl transition-all hover:bg-gray-200 text-xs uppercase tracking-widest">
+                Sign in with Google
             </button>
-            
-            <p class="mt-10 text-[8px] text-gray-800 font-bold uppercase tracking-[0.2em]">Verified Firebase Security v12.11</p>
         </div>
     </div>
 
-    <!-- MAIN APP -->
-    <div id="main-app" class="flex flex-1 h-full hidden">
+    <!-- APP -->
+    <div id="app-main" class="flex flex-1 h-full hidden">
         
         <!-- SIDEBAR -->
-        <aside class="w-80 glass flex flex-col border-r border-white/5 bg-[#050505]">
-            <div class="p-8">
-                <!-- User Profile -->
-                <div class="flex items-center space-x-4 mb-10 p-4 bg-white/5 rounded-2xl border border-white/5">
-                    <img id="user-avatar" class="w-10 h-10 rounded-full border border-blue-500/30" src="" alt="">
-                    <div class="flex flex-col truncate">
-                        <span id="user-display-name" class="text-xs font-black text-white truncate uppercase">OPERATOR</span>
-                        <button onclick="window.tridentLogout()" class="text-[8px] text-gray-500 hover:text-red-500 font-bold uppercase tracking-widest text-left">Disconnect</button>
-                    </div>
+        <aside class="w-72 glass border-r border-white/5 flex flex-col">
+            <div class="p-6">
+                <div class="flex items-center space-x-3 mb-10 p-3 bg-white/[0.02] border border-white/5 rounded-xl">
+                    <img id="u-img" class="w-8 h-8 rounded-full border border-cyan-500/20" src="" alt="">
+                    <span id="u-name" class="text-[11px] font-black truncate uppercase tracking-tight">---</span>
                 </div>
 
-                <h2 class="text-gray-600 text-[9px] font-black uppercase tracking-[0.3em] mb-6 ml-2">Active Channels</h2>
-                <div id="group-list" class="space-y-2 overflow-y-auto max-h-[50vh]"></div>
+                <h2 class="text-[10px] font-black text-gray-600 uppercase tracking-widest mb-4 ml-2">Groups</h2>
+                <div id="group-list" class="space-y-1 overflow-y-auto max-h-[60vh] stream-box"></div>
             </div>
             
-            <div class="mt-auto p-8 border-t border-white/5 bg-black/40">
-                <button id="btn-create-group" class="w-full bg-blue-600 text-white font-black py-4 rounded-xl transition-all text-[10px] uppercase tracking-widest shadow-lg shadow-blue-900/20 hover:bg-blue-500">INIT NEW FREQUENCY</button>
+            <div class="mt-auto p-6">
+                <button onclick="createRoom()" class="w-full py-4 bg-cyan-600/10 border border-cyan-500/20 text-cyan-500 font-black text-[10px] uppercase tracking-widest rounded-xl hover:bg-cyan-600 hover:text-white transition-all">
+                    Create Group
+                </button>
+                <div class="text-center mt-4 text-[8px] text-gray-700 font-bold uppercase tracking-widest">Alpha 25.1.30a</div>
             </div>
         </aside>
 
-        <!-- CHAT AREA -->
+        <!-- CHAT -->
         <main class="flex-1 flex flex-col bg-[#020202]">
-            <header class="p-6 border-b border-white/5 flex justify-between items-center glass">
-                <div class="flex flex-col">
-                    <span class="text-[9px] font-black text-blue-600 uppercase tracking-widest">Secured Link</span>
-                    <h3 id="current-room-name" class="text-xl font-light text-gray-300 tracking-tighter uppercase italic">Array Standby</h3>
-                </div>
-                <div id="status-text" class="text-[9px] font-black text-gray-700 tracking-widest uppercase px-4 py-2 border border-white/5 rounded-full">Node: Idle</div>
+            <header class="p-6 border-b border-white/5 flex justify-between items-center bg-black/20">
+                <h3 id="header-title" class="text-xl font-light tracking-tighter text-gray-400 uppercase italic">Standby</h3>
+                <div class="w-2 h-2 bg-green-500 rounded-full shadow-[0_0_8px_#22c55e]"></div>
             </header>
 
-            <div id="chat-box" class="flex-1 overflow-y-auto p-10 space-y-6 text-sm"></div>
+            <div id="chat-stream" class="flex-1 overflow-y-auto p-8 stream-box"></div>
 
-            <footer class="p-10 border-t border-white/5 glass">
-                <div class="max-w-5xl mx-auto flex items-end space-x-4">
-                    <div class="flex-1 flex flex-col space-y-2">
-                        <input type="text" id="chat-input" class="w-full bg-black border border-[#1a1a1a] rounded-2xl p-5 outline-none focus:border-blue-500/30 transition-all text-white placeholder-gray-800" placeholder="Enter broadcast packet...">
-                    </div>
-                    <button id="btn-mic" class="w-16 h-16 bg-[#0a0a0a] border border-white/5 rounded-2xl flex items-center justify-center hover:bg-[#111] transition-all text-2xl shadow-lg">🎤</button>
-                    <button id="btn-send" class="px-10 h-16 bg-blue-600 hover:bg-blue-500 rounded-2xl text-white font-black transition-all text-xs uppercase tracking-widest shadow-xl">Transmit</button>
+            <footer class="p-6 border-t border-white/5 glass">
+                <div class="max-w-4xl mx-auto flex items-center space-x-3">
+                    <input type="text" id="msg-in" class="flex-1 bg-black/50 border border-white/5 rounded-xl p-4 outline-none focus:border-cyan-500/20 transition-all text-sm" placeholder="Message...">
+                    <button id="mic-btn" onclick="toggleMic()" class="w-12 h-12 bg-white/[0.03] border border-white/5 rounded-xl flex items-center justify-center hover:bg-white/[0.05] transition-all text-lg">
+                        🎤
+                    </button>
+                    <button onclick="sendMsg()" class="px-8 h-12 bg-cyan-600 text-white font-black text-[11px] uppercase tracking-widest rounded-xl transition-all hover:bg-cyan-500">
+                        Send
+                    </button>
                 </div>
             </footer>
         </main>
     </div>
-
-    <script>
-        const LOBBY_TOPIC = "TRIDENT_CORE_LOBBY_V5";
-        let state = {
-            username: "",
-            photoURL: "",
-            sessionId: Math.random().toString(36).substring(2, 10),
-            currentRoom: null,
-            processedIds: new Set(),
-            activeGroups: {},
-            mediaRecorder: null,
-            audioChunks: [],
-            sse: null
-        };
-
-        const ui = {
-            overlay: document.getElementById('login-overlay'),
-            main: document.getElementById('main-app'),
-            avatar: document.getElementById('user-avatar'),
-            displayName: document.getElementById('user-display-name'),
-            groupList: document.getElementById('group-list'),
-            chatBox: document.getElementById('chat-box'),
-            chatInput: document.getElementById('chat-input'),
-            btnSend: document.getElementById('btn-send'),
-            btnMic: document.getElementById('btn-mic'),
-            roomTitle: document.getElementById('current-room-name'),
-            status: document.getElementById('status-text'),
-            btnCreate: document.getElementById('btn-create-group')
-        };
-
-        function initializeTridentInterface() {
-            ui.overlay.style.display = 'none';
-            ui.main.classList.remove('hidden');
-            ui.avatar.src = state.photoURL;
-            ui.displayName.innerText = state.username;
-            startLobbyDiscovery();
-        }
-
-        async function broadcast(topic, text, blob = null) {
-            if (!topic) return;
-            const meta = `${state.sessionId}<|>${state.username}<|>${text}`;
-            try {
-                if (blob) {
-                    await fetch(`https://ntfy.sh/${topic}`, { method: 'POST', body: blob, headers: { 'X-Message': meta, 'X-Title': 'TRIDENT_VOICE' } });
-                } else {
-                    await fetch(`https://ntfy.sh/${topic}`, { method: 'POST', body: meta });
-                }
-            } catch (e) {}
-        }
-
-        function establishPipeline(topic) {
-            if (state.sse) state.sse.close();
-            state.currentRoom = topic;
-            ui.roomTitle.innerText = topic;
-            ui.chatBox.innerHTML = `<div class="text-[10px] text-blue-900 font-bold uppercase tracking-[0.4em] mb-12 text-center">Synchronizing with Array Frequency...</div>`;
-            state.processedIds.clear();
-            
-            state.sse = new EventSource(`https://ntfy.sh/${topic}/sse`);
-            state.sse.onmessage = (e) => {
-                const data = JSON.parse(e.data);
-                if (state.processedIds.has(data.id)) return;
-                state.processedIds.add(data.id);
-                const p = data.message.split('<|>');
-                if (p.length === 3) {
-                    renderUIMsg(p[0] === state.sessionId ? "YOU" : p[1], p[2], data.attachment);
-                }
-            };
-            broadcast(topic, "SYSTEM: NODE CONNECTED");
-            ui.status.innerText = "Node: Active Stream";
-        }
-
-        function startLobbyDiscovery() {
-            const sse = new EventSource(`https://ntfy.sh/${LOBBY_TOPIC}/sse`);
-            sse.onmessage = (e) => {
-                const data = JSON.parse(e.data);
-                const p = data.message.split('|');
-                if (p[0] === "HB") {
-                    state.activeGroups[p[1]] = { room: p[1], user: p[2], time: Date.now() };
-                    renderSidebar();
-                }
-            };
-            setInterval(() => {
-                if (state.currentRoom) broadcast(LOBBY_TOPIC, `HB|${state.currentRoom}|${state.username}`);
-                renderSidebar();
-            }, 8000);
-        }
-
-        function renderUIMsg(user, text, attach) {
-            const div = document.createElement('div');
-            const isSelf = user === "YOU";
-            div.className = `flex flex-col space-y-1 ${isSelf ? 'border-r-2 border-blue-600 pr-5 text-right' : 'border-l border-white/5 pl-5'}`;
-            div.innerHTML = `<span class="text-[9px] font-black uppercase tracking-[0.2em] ${isSelf ? 'text-blue-500' : 'text-gray-600'}">${user}</span><span class="text-gray-300 font-light tracking-tight">${text}</span>`;
-            ui.chatBox.appendChild(div);
-            ui.chatBox.scrollTop = ui.chatBox.scrollHeight;
-            if (attach && !isSelf) new Audio(attach.url).play();
-        }
-
-        function renderSidebar() {
-            ui.groupList.innerHTML = '';
-            Object.values(state.activeGroups).forEach(g => {
-                if (Date.now() - g.time > 25000) return;
-                const b = document.createElement('button');
-                b.className = "w-full text-left p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-blue-500/30 transition-all group";
-                b.innerHTML = `<div class="text-white font-black text-xs uppercase group-hover:text-blue-400 transition-colors">${g.user}</div><div class="text-[8px] text-gray-700 font-bold uppercase tracking-widest mt-1 italic">${g.room}</div>`;
-                b.onclick = () => establishPipeline(g.room);
-                ui.groupList.appendChild(b);
-            });
-        }
-
-        ui.btnCreate.onclick = () => {
-            const rid = "T_" + Math.random().toString(36).substring(2, 8).toUpperCase();
-            establishPipeline(rid);
-            ui.btnCreate.innerText = "FREQUENCY ACTIVE";
-            ui.btnCreate.classList.add('opacity-30');
-            ui.btnCreate.disabled = true;
-        };
-
-        ui.btnSend.onclick = () => {
-            if (!ui.chatInput.value || !state.currentRoom) return;
-            broadcast(state.currentRoom, ui.chatInput.value);
-            ui.chatInput.value = '';
-        };
-
-        ui.btnMic.onclick = async () => {
-            try {
-                if (!state.mediaRecorder) {
-                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    state.mediaRecorder = new MediaRecorder(stream);
-                    state.mediaRecorder.ondataavailable = e => state.audioChunks.push(e.data);
-                    state.mediaRecorder.onstop = () => {
-                        const blob = new Blob(state.audioChunks, { type: 'audio/wav' });
-                        broadcast(state.currentRoom, "🎤 (VOICE PACKET TRANSMITTED)", blob);
-                        state.audioChunks = [];
-                    };
-                }
-                if (state.mediaRecorder.state === "inactive") {
-                    state.mediaRecorder.start();
-                    ui.btnMic.classList.add('recording');
-                } else {
-                    state.mediaRecorder.stop();
-                    ui.btnMic.classList.remove('recording');
-                }
-            } catch (err) { alert("Microphone array not detected."); }
-        };
-
-        window.onkeydown = (e) => { if(e.key === 'Enter') ui.btnSend.click(); };
-    </script>
 </body>
 </html>
